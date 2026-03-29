@@ -1,0 +1,112 @@
+{
+    "server_bin": "./build/tcpserver/tcpserver",
+    "bench_bin": "./build/benchmarks/bench_tcp",
+    "file_served": "/home/jagarcia/Escritorio/TFM/files/1GB.bin",
+    "port": 8080,
+    "cases": [
+        1,
+        2,
+        4,
+        8,
+        16
+    ],
+    "repetitions": 1,
+    "results": [
+        {
+            "parallel_bench_processes": 1,
+            "repetition": 0,
+            "success": 1,
+            "failed": 0,
+            "elapsed_s": 2.068734917999791,
+            "energy_j": 45.42299,
+            "total_iterations": 8,
+            "real_transferred_bytes": 8589934592,
+            "throughput_mib_s": 3959.9080233636914,
+            "benchmark_json_files": [
+                "./results/micro_1_0_0.json"
+            ]
+        },
+        {
+            "parallel_bench_processes": 2,
+            "repetition": 0,
+            "success": 2,
+            "failed": 0,
+            "elapsed_s": 2.9572179740002866,
+            "energy_j": 88.304546,
+            "total_iterations": 22,
+            "real_transferred_bytes": 23622320128,
+            "throughput_mib_s": 7617.970740765495,
+            "benchmark_json_files": [
+                "./results/micro_2_0_0.json",
+                "./results/micro_2_0_1.json"
+            ]
+        },
+        {
+            "parallel_bench_processes": 4,
+            "repetition": 0,
+            "success": 4,
+            "failed": 0,
+            "elapsed_s": 5.656008490999739,
+            "energy_j": 161.470059,
+            "total_iterations": 40,
+            "real_transferred_bytes": 42949672960,
+            "throughput_mib_s": 7241.856172100625,
+            "benchmark_json_files": [
+                "./results/micro_4_0_0.json",
+                "./results/micro_4_0_1.json",
+                "./results/micro_4_0_2.json",
+                "./results/micro_4_0_3.json"
+            ]
+        },
+        {
+            "parallel_bench_processes": 8,
+            "repetition": 0,
+            "success": 8,
+            "failed": 0,
+            "elapsed_s": 11.439734623000277,
+            "energy_j": 336.70706,
+            "total_iterations": 85,
+            "real_transferred_bytes": 91268055040,
+            "throughput_mib_s": 7608.568106553873,
+            "benchmark_json_files": [
+                "./results/micro_8_0_0.json",
+                "./results/micro_8_0_1.json",
+                "./results/micro_8_0_2.json",
+                "./results/micro_8_0_3.json",
+                "./results/micro_8_0_4.json",
+                "./results/micro_8_0_5.json",
+                "./results/micro_8_0_6.json",
+                "./results/micro_8_0_7.json"
+            ]
+        },
+        {
+            "parallel_bench_processes": 16,
+            "repetition": 0,
+            "success": 16,
+            "failed": 0,
+            "elapsed_s": 19.742391466999834,
+            "energy_j": 582.387271,
+            "total_iterations": 145,
+            "real_transferred_bytes": 155692564480,
+            "throughput_mib_s": 7520.8720406638695,
+            "benchmark_json_files": [
+                "./results/micro_16_0_0.json",
+                "./results/micro_16_0_1.json",
+                "./results/micro_16_0_2.json",
+                "./results/micro_16_0_3.json",
+                "./results/micro_16_0_4.json",
+                "./results/micro_16_0_5.json",
+                "./results/micro_16_0_6.json",
+                "./results/micro_16_0_7.json",
+                "./results/micro_16_0_8.json",
+                "./results/micro_16_0_9.json",
+                "./results/micro_16_0_10.json",
+                "./results/micro_16_0_11.json",
+                "./results/micro_16_0_12.json",
+                "./results/micro_16_0_13.json",
+                "./results/micro_16_0_14.json",
+                "./results/micro_16_0_15.json"
+            ]
+        }
+    ]
+}
