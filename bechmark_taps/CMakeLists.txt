@@ -6,26 +6,38 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+option(TAPS_TCP_USE_LIBCXX "Build with libc++ when using Clang" OFF)
+option(TAPS_ENABLE_BENCHMARKS "Enable Google Benchmark benchmarks" ON)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "C compiler: ${CMAKE_C_COMPILER}")
 message(STATUS "CXX compiler: ${CMAKE_CXX_COMPILER}")
-
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall -Wextra -pedantic")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -Wall -Wextra -pedantic")
 
 find_package(Threads REQUIRED)
 find_package(benchmark REQUIRED)
-
-set(CMAKE_PREFIX_PATH
-    "/home/jagarcia/Escritorio/TFM/taps-asio/proyecto_taps/install"
-    ${CMAKE_PREFIX_PATH}
-)
-
 find_package(TAPS REQUIRED CONFIG)
 
-option(TAPS_ENABLE_BENCHMARKS "Enable Google Benchmark benchmarks" ON)
+add_compile_options(-Wall -Wextra -pedantic)
+
+add_compile_options(
+    $<$<CONFIG:Debug>:-g>
+    $<$<CONFIG:Debug>:-O0>
+    $<$<CONFIG:Release>:-O3>
+    $<$<CONFIG:Release>:-DNDEBUG>
+)
+
+if(TAPS_TCP_USE_LIBCXX)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_compile_options(-stdlib=libc++)
+        add_link_options(-stdlib=libc++)
+        message(STATUS "Building with Clang + libc++")
+    else()
+        message(FATAL_ERROR "TAPS_TCP_USE_LIBCXX=ON requires Clang")
+    endif()
+endif()
 
 add_subdirectory(tcpserver)
 add_subdirectory(tcpclient)

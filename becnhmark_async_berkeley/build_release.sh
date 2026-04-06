@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ASYNC_BERKELEY_DIR="/home/jagarcia/Escritorio/TFM/async-berkeley/async-berkeley"
+ASYNC_BERKELEY_DIR="/home/jagarcia/Escritorio/TFM/async-berkeley/async-berkeley" #YOUR INSTALL
 
 if [ ! -f "$ASYNC_BERKELEY_DIR/CMakeLists.txt" ]; then
     echo "Error: async-berkeley no encontrado en $ASYNC_BERKELEY_DIR"

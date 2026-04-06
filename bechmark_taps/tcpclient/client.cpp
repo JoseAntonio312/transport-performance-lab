@@ -24,9 +24,6 @@
 #include <string>
 #include <vector>
 
-// Alias asio
-namespace asio = ::asio;
-
 // Puerto por defecto
 constexpr int DEFAULT_PORT = 8080;
 

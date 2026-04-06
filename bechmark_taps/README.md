@@ -413,7 +413,7 @@ Esto permite observar si existen diferencias relevantes en:
 ### Compilar
 
 ```bash
-./build_release.sh
+sudo ./build_release.sh
 ```
 
 ### Lanzar el servidor manualmente
@@ -443,13 +443,13 @@ O indicando nombre de salida:
 ### Lanzar la campaña automática
 
 ```bash
-python3 scripts/run_bench.py
+sudo python3 scripts/run_bench.py
 ```
 
 o:
 
 ```bash
-./scripts/run_bench.py
+sudo ./scripts/run_bench.py
 ```
 
 ---
