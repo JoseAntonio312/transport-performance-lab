@@ -47,7 +47,7 @@ build_one() {
     cmake --build "$build_dir" --config Release -j"$(nproc)"
 
     echo ""
-    echo "Compilacion BOOST ASIO completada en modo Release con $compiler_label."
+    echo "Compilacion COROSIO completada en modo Release con $compiler_label."
     echo "Ejecutables:"
     echo "  $build_dir/tcpserver/tcpserver"
     echo "  $build_dir/tcpclient/tcpclient"

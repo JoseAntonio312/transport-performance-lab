@@ -2,3 +2,15 @@
 # Build artifacts
 build/
 **/build/
+
+build-clang/
+**/build-clang/
+
+build-gcc/
+**/build-gcc/
+
+results/
+**/results/
+
+/files/*
+!/files/.gitkeep

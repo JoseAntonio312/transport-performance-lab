@@ -1,6 +1,6 @@
-# BOOST ASIO - Transferencia de ficheros y benchmarking en C++23
+# COROSIO - Transferencia de ficheros y benchmarking en C++23
 
-Este proyecto implementa una base de trabajo en **C++23** para estudiar transferencia de ficheros sobre **Boost.Asio**, con foco en:
+Este proyecto implementa una base de trabajo en **C++23** para estudiar transferencia de ficheros sobre **Corosio**, con foco en:
 
 - implementación funcional de **servidor TCP**;
 - implementación funcional de **cliente TCP**;
@@ -22,13 +22,13 @@ La idea del proyecto es construir primero una versión funcional, limpia y repro
 - percentiles;
 - máximos y mínimos.
 
-Además de comparar distintas tecnologías de transporte, esta versión incorpora también la comparación entre ejecutables compilados con **G++** y ejecutables compilados con **Clang++**, con el objetivo de estudiar si el compilador introduce diferencias medibles sobre una implementación basada en **Boost.Asio**.
+Además de comparar distintas tecnologías de transporte, esta versión incorpora también la comparación entre ejecutables compilados con **G++** y ejecutables compilados con **Clang++**, con especial interés en el posible impacto del compilador sobre la optimización de corrutinas.
 
 ---
 
 ## Objetivo del proyecto
 
-El objetivo actual del proyecto es disponer de una implementación propia con **Boost.Asio** que sirva como base experimental para estudiar:
+El objetivo actual del proyecto es disponer de una implementación propia con **Corosio** que sirva como base experimental para estudiar:
 
 - transferencia de ficheros;
 - concurrencia con múltiples clientes;
@@ -36,14 +36,14 @@ El objetivo actual del proyecto es disponer de una implementación propia con **
 - medición de consumo energético;
 - diferencias de comportamiento entre binarios compilados con **G++** y **Clang++**.
 
-En esta fase se está trabajando con una implementación basada en **Boost.Asio**, manteniendo la misma lógica de pruebas y ampliando el análisis a una segunda dimensión experimental: el compilador utilizado.
+En esta fase se está trabajando con **Corosio** como librería de networking basada en corrutinas, manteniendo una estructura lo más comparable posible con la versión equivalente basada en BSD sockets y ampliando el análisis a una segunda dimensión experimental: el compilador empleado.
 
 ---
 
 ## Estructura del proyecto
 
 ```text
-boost-asio/
+corosio/
 ├── benchmarks/
 │   ├── CMakeLists.txt
 │   └── bench_tcp.cpp
@@ -79,7 +79,7 @@ El servidor:
 - envía el mismo fichero a todos los clientes conectados;
 - trabaja con salida mínima por pantalla para no introducir ruido en las mediciones.
 
-La concurrencia se gestiona mediante **Boost.Asio asíncrono**.
+La concurrencia se gestiona con **Corosio**, empleando un modelo basado en **corrutinas asíncronas** y operaciones de E/S no bloqueantes sobre sockets TCP.
 
 ### 2. Cliente TCP
 
@@ -92,7 +92,7 @@ El cliente:
 - lo guarda en disco;
 - también minimiza la salida por pantalla para mantener estabilidad en pruebas.
 
-La comunicación se gestiona mediante **Boost.Asio asíncrono**.
+La descarga se realiza con operaciones asíncronas de lectura sobre **Corosio**, manteniendo una estructura sencilla y comparable con otras implementaciones.
 
 ### 3. Benchmark TCP
 
@@ -183,12 +183,6 @@ sudo apt update
 sudo apt install cmake
 ```
 
-### Boost
-
-```bash
-sudo apt install libboost-all-dev
-```
-
 ### Google Benchmark
 
 ```bash
@@ -203,6 +197,21 @@ sudo apt install python3 python3-pip
 
 ---
 
+## Dependencias de Corosio
+
+El proyecto usa **Corosio** como librería principal de networking y se integra mediante **CMake**. La base experimental se mantiene en **C++23**.
+
+La resolución de dependencias se realiza desde el propio `CMakeLists.txt` del proyecto, de forma que no es necesario instalar manualmente Corosio como paquete del sistema si se utiliza `FetchContent`.
+
+De forma general, la compilación de esta versión requiere:
+
+- soporte de **corrutinas de C++23** en el compilador;
+- **CMake**;
+- **Google Benchmark** para los benchmarks;
+- acceso a las dependencias que `CMake` descargará para Corosio.
+
+---
+
 ## Compilación del proyecto
 
 El proyecto está preparado para compilarse en **Release**.
@@ -210,7 +219,7 @@ El proyecto está preparado para compilarse en **Release**.
 ### Script recomendado
 
 ```bash
-./build_release.sh
+sudo ./build_release.sh
 ```
 
 ### Compilación con distintos compiladores
@@ -260,7 +269,7 @@ Además de la dimensión de concurrencia, las pruebas pueden repetirse para dos 
 
 Esto permite observar si existen diferencias relevantes en:
 
-- coste temporal de la implementación;
+- coste temporal de las corrutinas;
 - throughput;
 - escalabilidad;
 - eficiencia energética;
@@ -285,7 +294,7 @@ Esto permite observar si existen diferencias relevantes en:
 ### Lanzar una prueba individual
 
 ```bash
-./build/benchmarks/bench_tcp --benchmark_min_time=1s --benchmark_repetitions=1 --benchmark_out=results/micro.json --benchmark_out_format=json
+./build/benchmarks/bench_tcp   --benchmark_min_time=1s   --benchmark_repetitions=1   --benchmark_out=results/micro.json   --benchmark_out_format=json
 ```
 
 ### Lanzar la campaña automática
@@ -391,6 +400,24 @@ Contiene un resumen procesado con:
 - throughput agregado.
 
 En la fase comparativa por compilador, conviene que estos resultados puedan asociarse también al compilador con el que se generó cada ejecutable.
+
+---
+
+## Notas de implementación
+
+Esta versión sustituye la multiplexación manual con `poll()` por un modelo basado en **corrutinas** con **Corosio**, manteniendo:
+
+- el mismo protocolo de transferencia;
+- una organización del proyecto equivalente;
+- una implementación con salida mínima;
+- la comparabilidad experimental con otras versiones del mismo trabajo.
+
+Además, se incorpora una nueva dimensión experimental basada en el compilador utilizado, de modo que la misma implementación pueda analizarse con:
+
+- **G++**;
+- **Clang++**.
+
+El objetivo es que la comparación entre tecnologías se haga sobre una base lo más homogénea posible en estructura, protocolo y metodología de medida, y que también sea posible observar el posible impacto del compilador sobre la generación de código para corrutinas.
 
 ---
 

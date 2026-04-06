@@ -1,17 +1,16 @@
 /*
  * Copyright (c) 2026 José Antonio García Montañez
  *
- * TCP file server with Boost.Asio coroutines
+ * TCP file server with Corosio
  * Minimal output version for performance and energy measurements.
  */
 
 #include <csignal>
 
-#include <boost/asio.hpp>
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/use_awaitable.hpp>
+#include <boost/corosio.hpp>
+#include <boost/capy/buffers.hpp>
+#include <boost/capy/task.hpp>
+#include <boost/capy/ex/run_async.hpp>
 
 #include <arpa/inet.h>
 
@@ -19,15 +18,14 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
 // Alias std::filesystem
 namespace fs = std::filesystem;
-namespace asio = boost::asio;
-using tcp = asio::ip::tcp;
+namespace corosio = boost::corosio;
+namespace capy = boost::capy;
 
 // Puerto por defecto
 constexpr int DEFAULT_PORT = 8080;
@@ -37,19 +35,17 @@ constexpr int BACKLOG = 128;
 
 // Estructura estado cliente
 struct ClientState {
-    tcp::socket socket;    // socket descriptor
-    std::size_t sent = 0;  // sent bytes
-
-    explicit ClientState(asio::any_io_executor executor)
-        : socket(executor) {}
+    std::size_t sent = 0; // sent bytes
 };
 
+// Manejo de la arquitectura de red
 static void append_u32(std::vector<char>& buffer, std::uint32_t value) {
     std::uint32_t net = htonl(value);
     const char* p = reinterpret_cast<const char*>(&net);
     buffer.insert(buffer.end(), p, p + sizeof(net));
 }
 
+// Añadir un uint64_t al buffer en formato de red
 static void append_u64(std::vector<char>& buffer, std::uint64_t value) {
     std::uint32_t high = htonl(static_cast<std::uint32_t>(value >> 32));
     std::uint32_t low  = htonl(static_cast<std::uint32_t>(value & 0xFFFFFFFFULL));
@@ -61,6 +57,7 @@ static void append_u64(std::vector<char>& buffer, std::uint64_t value) {
     buffer.insert(buffer.end(), p2, p2 + sizeof(low));
 }
 
+// Cargar el fichero completo en memoria
 static std::vector<char> load_file(const fs::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
@@ -84,7 +81,11 @@ static std::vector<char> load_file(const fs::path& path) {
     return data;
 }
 
-static std::vector<char> build_packet(const std::string& filename, const std::vector<char>& file_data) {
+// Construcción de nuestro paquete
+// Formato:
+// [u32 tam_nombre][nombre][u64 tam_fichero][datos]
+static std::vector<char> build_packet(const std::string& filename,
+                                      const std::vector<char>& file_data) {
     std::vector<char> packet;
     packet.reserve(sizeof(std::uint32_t) + filename.size() +
                    sizeof(std::uint64_t) + file_data.size());
@@ -98,51 +99,47 @@ static std::vector<char> build_packet(const std::string& filename, const std::ve
     return packet;
 }
 
-static asio::awaitable<void> do_write(std::shared_ptr<ClientState> client,
-                                      std::shared_ptr<const std::vector<char>> packet) {
-    try {
-        while (client->sent < packet->size()) {
-            std::size_t bytes_transferred =
-                co_await client->socket.async_write_some(
-                    asio::buffer(packet->data() + client->sent, packet->size() - client->sent),
-                    asio::use_awaitable
-                );
+static capy::task<void> serve_client(corosio::tcp_socket sock,
+                                     const std::vector<char>& packet) {
+    ClientState client;
 
-            client->sent += bytes_transferred;
+    while (client.sent < packet.size()) {
+        auto [ec, n] = co_await sock.write_some(
+            capy::const_buffer(packet.data() + client.sent,
+                               packet.size() - client.sent));
+
+        if (ec || n == 0) {
+            break;
         }
-    } catch (...) {
+
+        client.sent += static_cast<std::size_t>(n);
     }
 
-    boost::system::error_code close_ec;
-    client->socket.shutdown(tcp::socket::shutdown_both, close_ec);
-    client->socket.close(close_ec);
-
+    sock.close();
     co_return;
 }
 
-static asio::awaitable<void> do_accept(tcp::acceptor& acceptor,
-                                       std::shared_ptr<const std::vector<char>> packet) {
-    auto executor = co_await asio::this_coro::executor;
-
+static capy::task<void> accept_loop(corosio::io_context& ctx,
+                                    corosio::tcp_acceptor& acceptor,
+                                    const std::vector<char>& packet) {
     while (true) {
-        auto client = std::make_shared<ClientState>(executor);
+        corosio::tcp_socket sock(ctx);
+        auto [ec] = co_await acceptor.accept(sock);
 
-        try {
-            co_await acceptor.async_accept(client->socket, asio::use_awaitable);
-
-            asio::co_spawn(
-                executor,
-                do_write(client, packet),
-                asio::detached
-            );
-        } catch (...) {
+        if (ec) {
+            continue;
         }
+
+        capy::run_async(ctx.get_executor())(
+            serve_client(std::move(sock), packet)
+        );
     }
 }
 
 int main(int argc, char* argv[]) {
     std::signal(SIGPIPE, SIG_IGN);
 
+    // Check args
     if (argc < 2 || argc > 4) {
         std::cerr << "Uso: " << argv[0] << " <ruta_fichero> [puerto] [num_hebras]\n";
         return 1;
@@ -182,69 +179,45 @@ int main(int argc, char* argv[]) {
     }
 
     const std::string filename = file_path.filename().string();
-    auto packet = std::make_shared<const std::vector<char>>(build_packet(filename, file_data));
+    const std::vector<char> packet = build_packet(filename, file_data);
 
-    try {
-        asio::io_context io_context;
+    corosio::io_context ctx;
+    corosio::tcp_acceptor acceptor(ctx);
 
-        auto work_guard = asio::make_work_guard(io_context);
+    acceptor.open(corosio::tcp::v4());
 
-        boost::system::error_code ec;
-        tcp::acceptor acceptor(io_context);
-
-        acceptor.open(tcp::v4(), ec);
-        if (ec) {
-            std::cerr << "open: " << ec.message() << "\n";
-            return 1;
-        }
-
-        acceptor.set_option(asio::socket_base::reuse_address(true), ec);
-        if (ec) {
-            std::cerr << "setsockopt: " << ec.message() << "\n";
-            return 1;
-        }
-
-        tcp::endpoint endpoint(tcp::v4(), static_cast<unsigned short>(port));
-
-        acceptor.bind(endpoint, ec);
-        if (ec) {
-            std::cerr << "bind: " << ec.message() << "\n";
-            return 1;
-        }
-
-        acceptor.listen(BACKLOG, ec);
-        if (ec) {
-            std::cerr << "listen: " << ec.message() << "\n";
-            return 1;
-        }
-
-        std::cout << "Server ready on port " << port
-                  << " with " << threads << " threads\n";
-
-        asio::co_spawn(
-            io_context,
-            do_accept(acceptor, packet),
-            asio::detached
-        );
-
-        std::vector<std::thread> pool;
-        pool.reserve(static_cast<std::size_t>(threads > 1 ? threads - 1 : 0));
-
-        for (int i = 1; i < threads; ++i) {
-            pool.emplace_back([&io_context]() {
-                io_context.run();
-            });
-        }
-
-        io_context.run();
-
-        for (auto& t : pool) {
-            t.join();
-        }
-
-    } catch (const std::exception& e) {
-        std::cerr << e.what() << "\n";
+    auto bind_ec = acceptor.bind(corosio::endpoint(static_cast<std::uint16_t>(port)));
+    if (bind_ec) {
+        std::cerr << "bind: " << bind_ec.message() << "\n";
         return 1;
+    }
+
+    auto listen_ec = acceptor.listen(BACKLOG);
+    if (listen_ec) {
+        std::cerr << "listen: " << listen_ec.message() << "\n";
+        return 1;
+    }
+
+    std::cout << "Server ready on port " << port
+              << " with " << threads << " threads\n";
+
+    capy::run_async(ctx.get_executor())(
+        accept_loop(ctx, acceptor, packet)
+    );
+
+    std::vector<std::thread> pool;
+    pool.reserve(static_cast<std::size_t>(threads > 1 ? threads - 1 : 0));
+
+    for (int i = 1; i < threads; ++i) {
+        pool.emplace_back([&ctx]() {
+            ctx.run();
+        });
+    }
+
+    ctx.run();
+
+    for (auto& t : pool) {
+        t.join();
     }
 
     return 0;

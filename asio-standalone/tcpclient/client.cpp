@@ -17,8 +17,6 @@
 #include <string>
 #include <vector>
 
-// Alias boost::asio
-namespace asio = ::asio;
 using tcp = asio::ip::tcp;
 
 // Puerto por defecto
@@ -188,7 +186,6 @@ static asio::awaitable<void> do_session(const std::shared_ptr<ClientState>& clie
 }
 
 int main(int argc, char* argv[]) {
-
     // Check args
     if (argc < 2 || argc > 4) {
         std::cerr << "Uso: " << argv[0] << " <ip_servidor> [puerto] [nombre_salida]\n";

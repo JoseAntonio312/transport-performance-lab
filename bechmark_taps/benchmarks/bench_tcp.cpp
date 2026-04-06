@@ -30,23 +30,26 @@ namespace asio = ::asio;
 // Puerto del servidor
 constexpr int DEFAULT_PORT = 8080;
 
+// Puerto global configurable
+static int g_port = DEFAULT_PORT;
+
 // Buffer de recepcion
 constexpr std::size_t BUFFER_SIZE = 8192;
 
 // Estructura estado cliente
 struct ClientState {
-    std::unique_ptr<taps::Connection> connection; // connection descriptor
-    std::vector<char> buffer;                     // reusable buffer
-    std::string filename;                         // filename
-    std::uint64_t file_size = 0;                 // file size
-    std::uint64_t remaining = 0;                 // remaining bytes
-    std::uint32_t filename_size = 0;             // filename size
-    std::uint32_t high_net = 0;                  // high uint32
-    std::uint32_t low_net = 0;                   // low uint32
-    std::vector<char> stream_buffer;             // stream buffer
-    std::size_t stream_offset = 0;               // consumed bytes
-    bool done = false;                           // end state
-    bool failed = false;                         // error state
+    std::unique_ptr<taps::Connection> connection;
+    std::vector<char> buffer;
+    std::string filename;
+    std::uint64_t file_size = 0;
+    std::uint64_t remaining = 0;
+    std::uint32_t filename_size = 0;
+    std::uint32_t high_net = 0;
+    std::uint32_t low_net = 0;
+    std::vector<char> stream_buffer;
+    std::size_t stream_offset = 0;
+    bool done = false;
+    bool failed = false;
 
     explicit ClientState(std::unique_ptr<taps::Connection> conn, std::size_t buffer_size)
         : connection(std::move(conn)), buffer(buffer_size) {
@@ -63,6 +66,7 @@ static asio::awaitable<bool> recv_exact(const std::shared_ptr<ClientState>& clie
 
     while (received < total) {
         const std::size_t available = client->stream_buffer.size() - client->stream_offset;
+
         if (available > 0) {
             const std::size_t chunk = std::min(total - received, available);
             std::memcpy(ptr + received,
@@ -126,11 +130,9 @@ static asio::awaitable<std::uint64_t> read_u64(const std::shared_ptr<ClientState
 }
 
 // Benchmark de descarga del fichero servido
-// Protocolo:
-// [u32 tam_nombre][nombre][u64 tam_fichero][contenido]
 static void BM_TCP_FileDownload(benchmark::State& state) {
     const char* ip = "127.0.0.1";
-    const int port = DEFAULT_PORT;
+    const int port = g_port;
 
     for (auto _ : state) {
         asio::io_context io_context;
@@ -162,7 +164,6 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
 
                     client = std::make_shared<ClientState>(std::move(*init_result), BUFFER_SIZE);
 
-                    // Read filename size
                     client->filename_size = co_await read_u32(client);
                     if (client->filename_size == 0 || client->filename_size > 4096) {
                         client->failed = true;
@@ -170,7 +171,6 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
                         co_return;
                     }
 
-                    // Read filename
                     client->filename.resize(client->filename_size);
                     if (!(co_await recv_exact(client, client->filename.data(), client->filename_size))) {
                         client->failed = true;
@@ -178,13 +178,13 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
                         co_return;
                     }
 
-                    // Read file size
                     client->file_size = co_await read_u64(client);
                     client->remaining = client->file_size;
 
-                    // Read content
                     while (client->remaining > 0) {
-                        const std::size_t available = client->stream_buffer.size() - client->stream_offset;
+                        const std::size_t available =
+                            client->stream_buffer.size() - client->stream_offset;
+
                         if (available > 0) {
                             const std::size_t chunk = static_cast<std::size_t>(
                                 std::min<std::uint64_t>(client->remaining, available)
@@ -221,7 +221,6 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
 
                         client->remaining -= static_cast<std::uint64_t>(chunk);
 
-                        // Guardar sobrante, si existe
                         if (chunk < data.size()) {
                             const std::size_t leftover = data.size() - chunk;
                             client->stream_buffer.resize(leftover);
@@ -245,7 +244,6 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
             asio::detached
         );
 
-        // Loop
         while ((!client && !setup_failed) || (client && !client->done)) {
             io_context.run_one();
         }
@@ -261,6 +259,36 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
 }
 
 BENCHMARK(BM_TCP_FileDownload)
-    ->Unit(benchmark::kMillisecond);
+    ->Unit(benchmark::kMillisecond)
+    ->Iterations(1)
+    ->UseRealTime();
 
-BENCHMARK_MAIN();
+int main(int argc, char** argv) {
+    std::vector<char*> filtered_argv;
+    filtered_argv.reserve(static_cast<std::size_t>(argc));
+    filtered_argv.push_back(argv[0]);
+
+    const std::string prefix = "--server_port=";
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+
+        if (arg.rfind(prefix, 0) == 0) {
+            g_port = std::stoi(arg.substr(prefix.size()));
+        } else {
+            filtered_argv.push_back(argv[i]);
+        }
+    }
+
+    int filtered_argc = static_cast<int>(filtered_argv.size());
+    filtered_argv.push_back(nullptr);
+
+    benchmark::Initialize(&filtered_argc, filtered_argv.data());
+    if (benchmark::ReportUnrecognizedArguments(filtered_argc, filtered_argv.data())) {
+        return 1;
+    }
+
+    benchmark::RunSpecifiedBenchmarks();
+    benchmark::Shutdown();
+    return 0;
+}

@@ -29,6 +29,9 @@ using SocketHandle = io::socket::socket_handle;
 // Puerto del servidor
 constexpr int DEFAULT_PORT = 8080;
 
+// Puerto global configurable
+static int g_port = DEFAULT_PORT;
+
 // Poner un socket en modo no bloqueante
 static bool set_nonblocking(SocketHandle& fd) {
     int flags = io::fcntl(fd, F_GETFL, 0);
@@ -37,8 +40,6 @@ static bool set_nonblocking(SocketHandle& fd) {
 }
 
 // Obtener el descriptor nativo para poll()
-// Este helper existe solo para mantener poll() exactamente igual
-// que en la version BSD y asi conservar comparabilidad experimental.
 static int native_fd(const SocketHandle& fd) {
     return static_cast<int>(fd);
 }
@@ -76,28 +77,24 @@ static bool wait_for_connect(SocketHandle& fd) {
 
 // Conexion TCP basica
 static SocketHandle connect_tcp(const char* ip, int port) {
-    // Socket creation
-    // IMPORTANTE:
-    // Aqui ya no usamos socket() de BSD directamente.
-    // El benchmark usa async-berkeley mediante socket_handle.
     SocketHandle sock(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
-    // Socket non blocking
+    if (native_fd(sock) < 0) {
+        return {};
+    }
+
     if (!set_nonblocking(sock)) {
         return {};
     }
 
-    // Socket config
     sockaddr_in server{};
     server.sin_family = AF_INET;
     server.sin_port = htons(static_cast<uint16_t>(port));
 
-    // IP conversion
     if (inet_pton(AF_INET, ip, &server.sin_addr) <= 0) {
         return {};
     }
 
-    // Connect
     auto server_bytes = std::as_bytes(std::span{&server, 1});
     if (io::connect(sock, server_bytes) == -1) {
         if (errno != EINPROGRESS) {
@@ -124,16 +121,12 @@ static bool recv_exact(SocketHandle& fd, void* buffer, std::size_t total) {
         ssize_t n = io::recvmsg(fd, msg, 0);
 
         if (n > 0) {
-            // Counter update
             received += static_cast<std::size_t>(n);
         } else if (n == 0) {
-            // Closed connection
             return false;
         } else {
-            // Interrupted syscall
             if (errno == EINTR) continue;
 
-            // Waiting for data
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 pollfd pfd{};
                 pfd.fd = native_fd(fd);
@@ -159,12 +152,10 @@ static bool recv_exact(SocketHandle& fd, void* buffer, std::size_t total) {
                 continue;
             }
 
-            // Socket error
             return false;
         }
     }
 
-    // End
     return true;
 }
 
@@ -200,10 +191,9 @@ static std::uint64_t read_u64(SocketHandle& fd) {
 // [u32 tam_nombre][nombre][u64 tam_fichero][contenido]
 static void BM_TCP_FileDownload(benchmark::State& state) {
     const char* ip = "127.0.0.1";
-    const int port = DEFAULT_PORT;
+    const int port = g_port;
     constexpr std::size_t BUFFER_SIZE = 8192;
 
-    // Buffer reutilizable por hilo
     std::vector<char> buffer(BUFFER_SIZE);
 
     for (auto _ : state) {
@@ -215,25 +205,21 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
         }
 
         try {
-            // Read filename size
             std::uint32_t filename_size = read_u32(sock);
             if (filename_size == 0 || filename_size > 4096) {
                 state.SkipWithError("Tamano de nombre invalido.");
                 break;
             }
 
-            // Read filename
             std::string filename(filename_size, '\0');
             if (!recv_exact(sock, filename.data(), filename_size)) {
                 state.SkipWithError("Error leyendo nombre.");
                 break;
             }
 
-            // Read file size
             std::uint64_t file_size = read_u64(sock);
             std::uint64_t remaining = file_size;
 
-            // Read content
             while (remaining > 0) {
                 std::size_t chunk = static_cast<std::size_t>(
                     remaining > buffer.size() ? buffer.size() : remaining
@@ -296,6 +282,36 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
 }
 
 BENCHMARK(BM_TCP_FileDownload)
-    ->Unit(benchmark::kMillisecond);
+    ->Unit(benchmark::kMillisecond)
+    ->Iterations(1)
+    ->UseRealTime();
 
-BENCHMARK_MAIN();
+int main(int argc, char** argv) {
+    std::vector<char*> filtered_argv;
+    filtered_argv.reserve(static_cast<std::size_t>(argc));
+    filtered_argv.push_back(argv[0]);
+
+    const std::string prefix = "--server_port=";
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+
+        if (arg.rfind(prefix, 0) == 0) {
+            g_port = std::stoi(arg.substr(prefix.size()));
+        } else {
+            filtered_argv.push_back(argv[i]);
+        }
+    }
+
+    int filtered_argc = static_cast<int>(filtered_argv.size());
+    filtered_argv.push_back(nullptr);
+
+    benchmark::Initialize(&filtered_argc, filtered_argv.data());
+    if (benchmark::ReportUnrecognizedArguments(filtered_argc, filtered_argv.data())) {
+        return 1;
+    }
+
+    benchmark::RunSpecifiedBenchmarks();
+    benchmark::Shutdown();
+    return 0;
+}

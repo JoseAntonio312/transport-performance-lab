@@ -1,0 +1,6 @@
+sudo apt update
+sudo apt install clang
+
+
+ERROR LIB JOSEC
+Instala toolchain libc++

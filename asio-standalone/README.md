@@ -6,6 +6,7 @@ Este proyecto implementa una base de trabajo en **C++23** para estudiar transfer
 - implementación funcional de **cliente TCP**;
 - soporte para **múltiples clientes concurrentes**;
 - compilación en **modo Release** con **CMake**;
+- compilación y comparación con **G++** y **Clang++**;
 - benchmarking con **Google Benchmark**;
 - campañas concurrentes con varios procesos `bench_tcp`;
 - medición energética mediante **RAPL/powercap**.
@@ -21,6 +22,8 @@ La idea del proyecto es construir primero una versión funcional, limpia y repro
 - percentiles;
 - máximos y mínimos.
 
+Además de comparar distintas tecnologías de transporte, esta versión incorpora también la comparación entre ejecutables compilados con **G++** y ejecutables compilados con **Clang++**, con el objetivo de estudiar si el compilador introduce diferencias medibles sobre una implementación basada en **Asio standalone**.
+
 ---
 
 ## Objetivo del proyecto
@@ -30,9 +33,10 @@ El objetivo actual del proyecto es disponer de una implementación propia con **
 - transferencia de ficheros;
 - concurrencia con múltiples clientes;
 - benchmarking de rendimiento;
-- medición de consumo energético.
+- medición de consumo energético;
+- diferencias de comportamiento entre binarios compilados con **G++** y **Clang++**.
 
-En esta fase se está trabajando **únicamente con Asio standalone** (sin dependencia de Boost).
+En esta fase se está trabajando con una implementación basada en **Asio standalone** (sin dependencia de Boost), manteniendo la misma lógica experimental y ampliando el estudio a una segunda dimensión: el compilador.
 
 ---
 
@@ -113,6 +117,8 @@ El script en Python:
 - valida y procesa los JSON generados;
 - guarda resultados combinados en JSON.
 
+En la evolución actual del proyecto, este flujo está pensado para extenderse también a campañas que distingan explícitamente entre binarios generados con **G++** y con **Clang++**.
+
 ---
 
 ## Protocolo de transferencia
@@ -147,15 +153,27 @@ Este formato permite que el cliente sepa exactamente:
 - CPU de referencia: AMD Ryzen 7 7700
 - RAM de referencia: 32 GB DDR5 6000 MT/s
 
-### Compilador
+### Compiladores
 
-Se usa **GCC 14.1.0** mediante `update-alternatives`, por lo que no hace falta fijar rutas manuales a binarios en el proyecto.
+Se trabaja con dos compiladores en **C++23**:
 
-Ejemplo de configuración:
+- **G++**
+- **Clang++**
+
+La intención experimental es poder compilar el mismo código con ambos y comparar resultados de rendimiento, escalabilidad y consumo.
+
+Ejemplo de configuración con GCC mediante `update-alternatives`:
 
 ```bash
 sudo update-alternatives --install /usr/bin/g++ g++ /usr/local/gcc-14.1.0/bin/g++-14.1.0 14
 sudo update-alternatives --install /usr/bin/gcc gcc /usr/local/gcc-14.1.0/bin/gcc-14.1.0 14
+```
+
+Ejemplo de instalación de Clang:
+
+```bash
+sudo apt update
+sudo apt install clang
 ```
 
 ### CMake
@@ -165,10 +183,13 @@ sudo apt update
 sudo apt install cmake
 ```
 
-### Boost
+### Asio standalone
+
+En este entorno, Asio standalone puede instalarse desde los paquetes del sistema:
 
 ```bash
-sudo apt install libboost-all-dev
+sudo apt update
+sudo apt install libasio-dev
 ```
 
 ### Google Benchmark
@@ -194,6 +215,17 @@ El proyecto está preparado para compilarse en **Release**.
 ```bash
 ./build_release.sh
 ```
+
+### Compilación con distintos compiladores
+
+La línea experimental actual contempla compilar y probar esta implementación tanto con **G++** como con **Clang++**.
+
+El objetivo es generar dos conjuntos de ejecutables comparables:
+
+- una versión compilada con **G++**;
+- una versión compilada con **Clang++**.
+
+De este modo, cada campaña podrá repetirse con ambos compiladores sin cambiar el código fuente, aislando el efecto del compilador dentro del estudio.
 
 ---
 
@@ -221,6 +253,21 @@ Este enfoque permite medir:
 - consumo energético;
 - comportamiento bajo concurrencia;
 - escalabilidad del servidor.
+
+### Campaña por compilador
+
+Además de la dimensión de concurrencia, las pruebas pueden repetirse para dos familias de binarios:
+
+- binarios compilados con **G++**;
+- binarios compilados con **Clang++**.
+
+Esto permite observar si existen diferencias relevantes en:
+
+- coste temporal de la implementación;
+- throughput;
+- escalabilidad;
+- eficiencia energética;
+- estabilidad de las mediciones.
 
 ---
 
@@ -277,6 +324,12 @@ En las campañas concurrentes, el script añade además:
 - bytes transferidos;
 - throughput agregado.
 
+En la extensión por compilador, los resultados deberán poder distinguir también:
+
+- compilador utilizado;
+- binario ejecutado;
+- comparabilidad entre resultados equivalentes generados con **G++** y **Clang++**.
+
 ---
 
 ## Script de automatización
@@ -284,7 +337,7 @@ En las campañas concurrentes, el script añade además:
 ### Ruta
 
 ```text
-sudo scripts/run_bench.py
+scripts/run_bench.py
 ```
 
 ### Qué hace
@@ -298,6 +351,8 @@ El script:
 5. mide energía final;
 6. valida y procesa los ficheros `micro_*.json`;
 7. genera `results/macro_bench_results.json`.
+
+En su evolución natural dentro de este proyecto, el script podrá ejecutarse también separando campañas por compilador para comparar de forma sistemática los binarios generados con **G++** y **Clang++**.
 
 ---
 
@@ -313,6 +368,7 @@ sudo cpupower frequency-set -g performance
 
 - compilar siempre en `Release`;
 - evitar `Debug`;
+- repetir el mismo caso con **G++** y **Clang++** bajo las mismas condiciones;
 - cerrar programas pesados;
 - repetir experimentos varias veces;
 - controlar temperatura inicial;
@@ -336,6 +392,8 @@ Contiene un resumen procesado con:
 - iteraciones válidas;
 - bytes transferidos;
 - throughput agregado.
+
+En la fase comparativa por compilador, conviene que estos resultados puedan asociarse también al compilador con el que se generó cada ejecutable.
 
 ---
 

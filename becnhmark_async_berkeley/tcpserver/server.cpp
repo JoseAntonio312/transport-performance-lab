@@ -21,8 +21,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -38,20 +40,28 @@ constexpr int DEFAULT_PORT = 8080;
 // Conexiones tope
 constexpr int BACKLOG = 128;
 
-// Estructura estado cliente
 struct ClientState {
-    SocketHandle fd;      // socket descriptor (async-berkeley socket_handle)
-    std::size_t sent = 0; // sent bytes
+    SocketHandle fd;
+    std::size_t sent = 0;
 };
 
-// Poner un socket en modo no bloqueante
+struct WorkerState {
+    int wake_pipe_read = -1;
+    int wake_pipe_write = -1;
+    std::mutex mutex;
+    std::vector<SocketHandle> pending_clients;
+};
+
 static bool set_nonblocking(SocketHandle& fd) {
     int flags = io::fcntl(fd, F_GETFL, 0);
     if (flags == -1) return false;
     return io::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
 }
 
-// Intentar enviar todo lo posible a un cliente
+static int native_fd(const SocketHandle& fd) {
+    return static_cast<int>(fd);
+}
+
 static int send_all_possible(io::socket::socket_handle& fd,
                              std::size_t& sent,
                              std::vector<char>& packet) {
@@ -76,15 +86,12 @@ static int send_all_possible(io::socket::socket_handle& fd,
     return 1;
 }
 
-// Manejo de la arquitectura de red
 static void append_u32(std::vector<char>& buffer, std::uint32_t value) {
     std::uint32_t net = htonl(value);
     const char* p = reinterpret_cast<const char*>(&net);
     buffer.insert(buffer.end(), p, p + sizeof(net));
 }
 
-// Añadir un uint64_t al buffer en formato de red
-// Como no usamos una funcion tipo htonll, lo partimos en dos uint32_t
 static void append_u64(std::vector<char>& buffer, std::uint64_t value) {
     std::uint32_t high = htonl(static_cast<std::uint32_t>(value >> 32));
     std::uint32_t low  = htonl(static_cast<std::uint32_t>(value & 0xFFFFFFFFULL));
@@ -96,18 +103,14 @@ static void append_u64(std::vector<char>& buffer, std::uint64_t value) {
     buffer.insert(buffer.end(), p2, p2 + sizeof(low));
 }
 
-// Cargar el fichero completo en memoria
 static std::vector<char> load_file(const fs::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
         throw std::runtime_error("No se pudo abrir el fichero: " + path.string());
     }
 
-    // Size
     file.seekg(0, std::ios::end);
     std::streamsize size = file.tellg();
-
-    // Back to beginning
     file.seekg(0, std::ios::beg);
 
     if (size < 0) {
@@ -123,9 +126,6 @@ static std::vector<char> load_file(const fs::path& path) {
     return data;
 }
 
-// COntrucción de nuestro paquete
-// Formato:
-// [u32 tam_nombre][nombre][u64 tam_fichero][datos]
 static std::vector<char> build_packet(const std::string& filename, const std::vector<char>& file_data) {
     std::vector<char> packet;
     packet.reserve(sizeof(std::uint32_t) + filename.size() +
@@ -140,154 +140,46 @@ static std::vector<char> build_packet(const std::string& filename, const std::ve
     return packet;
 }
 
-// Obtener el descriptor nativo para poll()
-// Este helper existe solo para mantener poll() exactamente igual
-// que en la version BSD y asi conservar comparabilidad experimental.
-static int native_fd(const SocketHandle& fd) {
-    return static_cast<int>(fd);
-}
-
-int main(int argc, char* argv[]) {
-
-    std::signal(SIGPIPE, SIG_IGN);
-
-    // Check args
-    if (argc < 2 || argc > 3) {
-        std::cerr << "Uso: " << argv[0] << " <ruta_fichero> [puerto]\n";
-        return 1;
-    }
-
-    const fs::path file_path = argv[1];
-    int port = DEFAULT_PORT;
-
-    if (argc == 3) {
-        port = std::stoi(argv[2]);
-        if (port <= 0 || port > 65535) {
-            std::cerr << "Puerto invalido.\n";
-            return 1;
-        }
-    }
-
-    // Check file
-    if (!fs::exists(file_path) || !fs::is_regular_file(file_path)) {
-        std::cerr << "El fichero no existe o no es regular: " << file_path << "\n";
-        return 1;
-    }
-
-    // Load file
-    std::vector<char> file_data;
-    try {
-        file_data = load_file(file_path);
-    } catch (const std::exception& e) {
-        std::cerr << e.what() << "\n";
-        return 1;
-    }
-
-    // Filename
-    const std::string filename = file_path.filename().string();
-
-    // Final packet
-    std::vector<char> packet = build_packet(filename, file_data);
-
-    // Socket creation
-    // IMPORTANTE:
-    // Aqui ya no usamos socket() de BSD directamente.
-    // El servidor usa async-berkeley mediante socket_handle.
-    SocketHandle server_fd(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
-    // Endpoint reuse
-    int opt = 1;
-    auto opt_bytes = std::as_bytes(std::span{&opt, 1});
-    if (io::setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, opt_bytes) == -1) {
-        std::perror("setsockopt");
-        return 1;
-    }
-
-    // Set non_bloking socket
-    if (!set_nonblocking(server_fd)) {
-        std::perror("fcntl(server_fd)");
-        return 1;
-    }
-
-    // Socket config
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<uint16_t>(port));
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    auto addr_bytes = std::as_bytes(std::span{&addr, 1});
-
-    // Socket association
-    if (io::bind(server_fd, addr_bytes) == -1) {
-        std::perror("bind");
-        return 1;
-    }
-
-    // Socket listening
-    if (io::listen(server_fd, BACKLOG) == -1) {
-        std::perror("listen");
-        return 1;
-    }
-
-    std::cout << "Server ready on port " << port << '\n';
-
-    // Client data
+static void worker_loop(WorkerState& worker, std::vector<char>& packet) {
     std::vector<ClientState> clients;
 
-    // Loop
     while (true) {
         std::vector<pollfd> pollfds;
         pollfds.reserve(1 + clients.size());
 
-        //Reading
-        pollfds.push_back({native_fd(server_fd), POLLIN, 0});
+        pollfds.push_back({worker.wake_pipe_read, POLLIN, 0});
 
-        //Writing
         for (const auto& client : clients) {
             pollfds.push_back({native_fd(client.fd), POLLOUT, 0});
         }
 
-        // poll() for client activity
         int ready = poll(pollfds.data(),
                          static_cast<nfds_t>(pollfds.size()),
                          -1);
 
         if (ready == -1) {
             if (errno == EINTR) {
-                // Si fue interrumpido por una señal, seguimos sin romper
                 continue;
             }
-            std::perror("poll");
             break;
         }
 
-        // IF socket is ready to send...
         if (pollfds[0].revents & POLLIN) {
-            while (true) {
-                //Accept
-                auto [client_fd, client_addr] = io::accept(server_fd);
+            char tmp[64];
+            while (read(worker.wake_pipe_read, tmp, sizeof(tmp)) > 0) {
+            }
 
-                //Max clients
-                if (client_fd == -1) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        break;
-                    }
-                    std::perror("accept");
-                    break;
-                }
+            std::vector<SocketHandle> new_clients;
+            {
+                std::lock_guard<std::mutex> lock(worker.mutex);
+                new_clients.swap(worker.pending_clients);
+            }
 
-                // Client socket non blocking
-                if (!set_nonblocking(client_fd)) {
-                    std::perror("fcntl(client_fd)");
-                    continue;
-                }
-
-                (void)client_addr;
-                clients.push_back({std::move(client_fd), 0});
+            for (auto& fd : new_clients) {
+                clients.push_back({std::move(fd), 0});
             }
         }
 
-        // Looping all clients to sent his data
         for (std::size_t i = 0; i < clients.size();) {
             bool erase_client = false;
             short revents = pollfds[i + 1].revents;
@@ -296,13 +188,10 @@ int main(int argc, char* argv[]) {
                 std::size_t before = clients[i].sent;
                 int status = send_all_possible(clients[i].fd, clients[i].sent, packet);
 
-                // Closes client if data is sent
                 if (status == 1) {
                     clients[i].fd = {};
                     erase_client = true;
-                }
-                // Error
-                else if (status == -1 && clients[i].sent == before) {
+                } else if (status == -1 && clients[i].sent == before) {
                     clients[i].fd = {};
                     erase_client = true;
                 }
@@ -311,13 +200,152 @@ int main(int argc, char* argv[]) {
                 erase_client = true;
             }
 
-            // Ersing clients
             if (erase_client) {
                 clients.erase(clients.begin() + static_cast<long>(i));
             } else {
                 ++i;
             }
         }
+    }
+}
+
+int main(int argc, char* argv[]) {
+    std::signal(SIGPIPE, SIG_IGN);
+
+    if (argc < 2 || argc > 4) {
+        std::cerr << "Uso: " << argv[0] << " <ruta_fichero> [puerto] [num_hebras]\n";
+        return 1;
+    }
+
+    const fs::path file_path = argv[1];
+    int port = DEFAULT_PORT;
+    int threads = 1;
+
+    if (argc >= 3) {
+        port = std::stoi(argv[2]);
+        if (port <= 0 || port > 65535) {
+            std::cerr << "Puerto invalido.\n";
+            return 1;
+        }
+    }
+
+    if (argc == 4) {
+        threads = std::stoi(argv[3]);
+        if (threads <= 0) {
+            std::cerr << "Numero de hebras invalido.\n";
+            return 1;
+        }
+    }
+
+    if (!fs::exists(file_path) || !fs::is_regular_file(file_path)) {
+        std::cerr << "El fichero no existe o no es regular: " << file_path << "\n";
+        return 1;
+    }
+
+    std::vector<char> file_data;
+    try {
+        file_data = load_file(file_path);
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << "\n";
+        return 1;
+    }
+
+    const std::string filename = file_path.filename().string();
+    std::vector<char> packet = build_packet(filename, file_data);
+
+    SocketHandle server_fd(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+    int opt = 1;
+    auto opt_bytes = std::as_bytes(std::span{&opt, 1});
+    if (io::setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, opt_bytes) == -1) {
+        std::perror("setsockopt");
+        return 1;
+    }
+
+    if (!set_nonblocking(server_fd)) {
+        std::perror("fcntl(server_fd)");
+        return 1;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    auto addr_bytes = std::as_bytes(std::span{&addr, 1});
+
+    if (io::bind(server_fd, addr_bytes) == -1) {
+        std::perror("bind");
+        return 1;
+    }
+
+    if (io::listen(server_fd, BACKLOG) == -1) {
+        std::perror("listen");
+        return 1;
+    }
+
+    std::cout << "Server ready on port " << port
+              << " with " << threads << " threads\n";
+
+    std::vector<WorkerState> workers(static_cast<std::size_t>(threads));
+    std::vector<std::thread> pool;
+    pool.reserve(static_cast<std::size_t>(threads));
+
+    for (int i = 0; i < threads; ++i) {
+        int pipefd[2];
+        if (pipe(pipefd) == -1) {
+            std::perror("pipe");
+            return 1;
+        }
+
+        workers[static_cast<std::size_t>(i)].wake_pipe_read = pipefd[0];
+        workers[static_cast<std::size_t>(i)].wake_pipe_write = pipefd[1];
+
+        set_nonblocking(reinterpret_cast<SocketHandle&>(workers[static_cast<std::size_t>(i)].wake_pipe_read));
+        set_nonblocking(reinterpret_cast<SocketHandle&>(workers[static_cast<std::size_t>(i)].wake_pipe_write));
+
+        pool.emplace_back(worker_loop,
+                          std::ref(workers[static_cast<std::size_t>(i)]),
+                          std::ref(packet));
+    }
+
+    std::size_t next_worker = 0;
+
+    while (true) {
+        auto [client_fd, client_addr] = io::accept(server_fd);
+        (void)client_addr;
+
+        if (client_fd == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                pollfd pfd{native_fd(server_fd), POLLIN, 0};
+                if (poll(&pfd, 1, -1) == -1 && errno != EINTR) {
+                    std::perror("poll");
+                    break;
+                }
+                continue;
+            }
+            std::perror("accept");
+            continue;
+        }
+
+        if (!set_nonblocking(client_fd)) {
+            std::perror("fcntl(client_fd)");
+            continue;
+        }
+
+        WorkerState& worker = workers[next_worker];
+        next_worker = (next_worker + 1U) % workers.size();
+
+        {
+            std::lock_guard<std::mutex> lock(worker.mutex);
+            worker.pending_clients.push_back(std::move(client_fd));
+        }
+
+        const char wake = 1;
+        (void)write(worker.wake_pipe_write, &wake, sizeof(wake));
     }
 
     return 0;

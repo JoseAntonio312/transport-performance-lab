@@ -16,9 +16,12 @@ endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "C compiler: ${CMAKE_C_COMPILER}")
+message(STATUS "CXX compiler: ${CMAKE_CXX_COMPILER}")
+
 option(ASYNC_TCP_ENABLE_BENCHMARKS "Enable Google Benchmark benchmarks" ON)
 
-# Path to local async-berkeley checkout
 set(ASYNC_BERKELEY_DIR
     "/home/jagarcia/Escritorio/TFM/async-berkeley/async-berkeley"
     CACHE PATH "Path to async-berkeley root directory"
@@ -31,7 +34,6 @@ if(NOT EXISTS "${ASYNC_BERKELEY_DIR}/CMakeLists.txt")
     )
 endif()
 
-# Nada de warnings en ningún build type
 set(CMAKE_CXX_FLAGS_DEBUG   "-g -O0 -w")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -w")
 
