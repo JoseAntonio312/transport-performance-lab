@@ -80,7 +80,7 @@ Si alguno de ellos no existe, o no contiene el script esperado, simplemente se o
 ### Nombre
 
 ```bash
-./build_all_transports.sh
+./build.sh
 ```
 
 ### Qué hace
@@ -127,7 +127,7 @@ sudo apt-get install -y python3-matplotlib
 ### Nombre
 
 ```bash
-./run_all_benchmarks.sh
+./run.sh
 ```
 
 ### Qué hace
@@ -148,8 +148,8 @@ De nuevo, el control detallado sigue residiendo en cada subproyecto.
 Desde la raíz del repositorio:
 
 ```bash
-./build_all_transports.sh
-./run_all_benchmarks.sh
+./build.sh
+./run.sh
 ```
 
 Con este flujo:
@@ -165,8 +165,8 @@ Con este flujo:
 Si al copiarlos a la raíz no tienen permiso de ejecución:
 
 ```bash
-chmod +x build_all_transports.sh
-chmod +x run_all_benchmarks.sh
+chmod +x build.sh
+chmod +x run.sh
 ```
 
 ---
