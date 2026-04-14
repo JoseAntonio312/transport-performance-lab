@@ -1,0 +1,164 @@
+==== BENCHMARK SYSTEM INFO ====
+Timestamp: 2026-04-14 11:47:00
+
+==== uname -a ====
+Linux jagarcia-B650-AORUS-ELITE-AX 6.17.0-19-generic #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Fri Mar  6 23:08:46 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+
+==== hostnamectl ====
+ Static hostname: jagarcia-B650-AORUS-ELITE-AX
+       Icon name: computer-desktop
+         Chassis: desktop 🖥️
+      Machine ID: dcbefd0328234ce4adcc9672d77866c3
+         Boot ID: 6b06c300ed934424b3a34ca2337ed018
+Operating System: Ubuntu 24.04.4 LTS
+          Kernel: Linux 6.17.0-19-generic
+    Architecture: x86-64
+ Hardware Vendor: Gigabyte Technology Co., Ltd.
+  Hardware Model: B650 AORUS ELITE AX
+Firmware Version: FB1
+   Firmware Date: Wed 2024-05-22
+    Firmware Age: 1y 10month 3w 1d
+
+==== lscpu ====
+Arquitectura:                             x86_64
+modo(s) de operación de las CPUs:         32-bit, 64-bit
+Tamaños de las direcciones:               48 bits physical, 48 bits virtual
+Orden de los bytes:                       Little Endian
+CPU(s):                                   16
+Lista de la(s) CPU(s) en línea:           0-15
+ID de fabricante:                         AuthenticAMD
+ID de fabricante de BIOS:                 Advanced Micro Devices, Inc.
+Nombre del modelo:                        AMD Ryzen 7 7700 8-Core Processor
+Nombre del modelo de BIOS:                AMD Ryzen 7 7700 8-Core Processor               Unknown CPU @ 3.8GHz
+Familia de CPU BIOS:                      107
+Familia de CPU:                           25
+Modelo:                                   97
+Hilo(s) de procesamiento por núcleo:      2
+Núcleo(s) por «socket»:                   8
+«Socket(s)»:                              1
+Revisión:                                 2
+Aumento de frecuencia:                    activada
+CPU(s) factor de escala MHz:              73%
+CPU MHz máx.:                             5392,8721
+CPU MHz mín.:                             422,3340
+BogoMIPS:                                 7585,28
+Indicadores:                              fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good amd_lbr_v2 nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpuid_fault cpb cat_l3 cdp_l3 hw_pstate ssbd mba perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk avx512_bf16 clzero irperf xsaveerptr rdpru wbnoinvd cppc arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic vgif x2avic v_spec_ctrl vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid overflow_recov succor smca fsrm flush_l1d amd_lbr_pmc_freeze
+Virtualización:                           AMD-V
+Caché L1d:                                256 KiB (8 instancias)
+Caché L1i:                                256 KiB (8 instancias)
+Caché L2:                                 8 MiB (8 instancias)
+Caché L3:                                 32 MiB (1 instancia)
+Modo(s) NUMA:                             1
+CPU(s) del nodo NUMA 0:                   0-15
+Vulnerabilidad Gather data sampling:      Not affected
+Vulnerabilidad Ghostwrite:                Not affected
+Vulnerabilidad Indirect target selection: Not affected
+Vulnerabilidad Itlb multihit:             Not affected
+Vulnerabilidad L1tf:                      Not affected
+Vulnerabilidad Mds:                       Not affected
+Vulnerabilidad Meltdown:                  Not affected
+Vulnerabilidad Mmio stale data:           Not affected
+Vulnerabilidad Old microcode:             Not affected
+Vulnerabilidad Reg file data sampling:    Not affected
+Vulnerabilidad Retbleed:                  Not affected
+Vulnerabilidad Spec rstack overflow:      Mitigation; Safe RET
+Vulnerabilidad Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerabilidad Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerabilidad Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP always-on; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerabilidad Srbds:                     Not affected
+Vulnerabilidad Tsa:                       Vulnerable: No microcode
+Vulnerabilidad Tsx async abort:           Not affected
+Vulnerabilidad Vmscape:                   Mitigation; IBPB before exit to userspace
+
+==== free -h ====
+               total       usado       libre  compartido   búf/caché  disponible
+Mem:            30Gi       4,4Gi        18Gi       137Mi       7,4Gi        25Gi
+Inter:         8,0Gi          0B       8,0Gi
+
+==== lsblk ====
+NAME        MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS
+loop0         7:0    0 336,1M  1 loop /snap/code/226
+loop1         7:1    0     4K  1 loop /snap/bare/5
+loop2         7:2    0  55,5M  1 loop /snap/core18/2979
+loop3         7:3    0  63,8M  1 loop /snap/core20/2717
+loop4         7:4    0    74M  1 loop /snap/core22/2292
+loop5         7:5    0  55,5M  1 loop /snap/core18/2999
+loop6         7:6    0    74M  1 loop /snap/core22/2411
+loop7         7:7    0  66,8M  1 loop /snap/core24/1499
+loop8         7:8    0  66,8M  1 loop /snap/core24/1587
+loop9         7:9    0 251,7M  1 loop /snap/firefox/7766
+loop10        7:10   0 254,9M  1 loop /snap/firefox/7967
+loop11        7:11   0 162,5M  1 loop /snap/spotify/93
+loop12        7:12   0  16,4M  1 loop /snap/firmware-updater/216
+loop13        7:13   0 164,8M  1 loop /snap/gnome-3-28-1804/198
+loop14        7:14   0 531,4M  1 loop /snap/gnome-42-2204/247
+loop15        7:15   0 606,1M  1 loop /snap/gnome-46-2404/153
+loop16        7:16   0  91,7M  1 loop /snap/gtk-common-themes/1535
+loop17        7:17   0   395M  1 loop /snap/mesa-2404/1165
+loop18        7:18   0  10,8M  1 loop /snap/snap-store/1270
+loop19        7:19   0  15,6M  1 loop /snap/snap-store/1338
+loop20        7:20   0  48,1M  1 loop /snap/snapd/25935
+loop21        7:21   0  48,4M  1 loop /snap/snapd/26382
+loop22        7:22   0   576K  1 loop /snap/snapd-desktop-integration/343
+loop23        7:23   0 161,2M  1 loop /snap/spotify/92
+loop24        7:24   0 227,1M  1 loop /snap/thunderbird/1029
+loop25        7:25   0 227,1M  1 loop /snap/thunderbird/1040
+loop26        7:26   0   580K  1 loop /snap/snapd-desktop-integration/361
+loop27        7:27   0  16,4M  1 loop /snap/firmware-updater/224
+loop28        7:28   0 361,6M  1 loop /snap/code/233
+sda           8:0    0   1,8T  0 disk 
+├─sda1        8:1    0    16M  0 part 
+└─sda2        8:2    0   1,8T  0 part 
+nvme0n1     259:0    0 476,9G  0 disk 
+├─nvme0n1p1 259:1    0   100M  0 part /boot/efi
+├─nvme0n1p2 259:2    0    16M  0 part 
+├─nvme0n1p3 259:3    0 403,1G  0 part 
+├─nvme0n1p4 259:4    0   2,1G  0 part 
+├─nvme0n1p5 259:5    0   754M  0 part 
+└─nvme0n1p6 259:6    0  70,9G  0 part /
+
+==== governors ====
+/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu10/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu11/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu12/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu13/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu14/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu15/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu1/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu2/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu3/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu4/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu5/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu6/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu7/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu8/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu9/cpufreq/scaling_governor:powersave
+
+==== /proc/cmdline ====
+BOOT_IMAGE=/boot/vmlinuz-6.17.0-19-generic root=UUID=492856d2-fb72-47d3-858c-28c5844676c5 ro quiet splash vt.handoff=7
+
+==== env ====
+COLORTERM=truecolor
+DISPLAY=:0
+HOME=/root
+LANG=es_ES.UTF-8
+LOGNAME=root
+LS_COLORS=rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=00:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.avif=01;35:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:*~=00;90:*#=00;90:*.bak=00;90:*.crdownload=00;90:*.dpkg-dist=00;90:*.dpkg-new=00;90:*.dpkg-old=00;90:*.dpkg-tmp=00;90:*.old=00;90:*.orig=00;90:*.part=00;90:*.rej=00;90:*.rpmnew=00;90:*.rpmorig=00;90:*.rpmsave=00;90:*.swp=00;90:*.tmp=00;90:*.ucf-dist=00;90:*.ucf-new=00;90:*.ucf-old=00;90:
+MAIL=/var/mail/root
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+PWD=/home/jagarcia/Escritorio/TFM-Repo
+RANDOMIZE_ORDER=1
+SETTLE_SECONDS_AFTER=30
+SETTLE_SECONDS_BEFORE=30
+SHELL=/bin/bash
+SHLVL=1
+SUDO_COMMAND=./run.sh
+SUDO_GID=1000
+SUDO_UID=1000
+SUDO_USER=jagarcia
+TERM=xterm-256color
+USER=root
+_=/usr/bin/env
+XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UQ1ON3
+XDG_CURRENT_DESKTOP=ubuntu:GNOME

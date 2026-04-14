@@ -122,12 +122,30 @@ sudo apt-get install -y python3-matplotlib
 
 ---
 
+## Instalación automática de pypdf
+
+El script global de compilación o ejecución puede necesitar `pypdf` automáticamente si no está disponible, ya que se utiliza para fusionar los informes PDF generados por cada librería en un único documento final comparativo.
+
+Orden de prioridad del intento de instalación:
+
+1. `apt-get` con privilegios de administrador;
+2. si no existe `apt-get`, intento con `python3 -m pip install pypdf`.
+
+En Ubuntu, lo normal es que se instale mediante:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-pypdf
+```
+
+---
+
 ## Script global de ejecución de benchmarks
 
 ### Nombre
 
 ```bash
-./run.sh
+sudo ./run.sh
 ```
 
 ### Qué hace
@@ -148,8 +166,8 @@ De nuevo, el control detallado sigue residiendo en cada subproyecto.
 Desde la raíz del repositorio:
 
 ```bash
-./build.sh
-./run.sh
+sudo ./build.sh
+sudo ./run.sh
 ```
 
 Con este flujo:

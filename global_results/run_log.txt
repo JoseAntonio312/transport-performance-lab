@@ -1,0 +1,20 @@
+[11:47:00] Raiz del repositorio: /home/jagarcia/Escritorio/TFM-Repo
+[11:47:00] Resultados globales: /home/jagarcia/Escritorio/TFM-Repo/global_results
+[11:47:00] Midiendo baseline idle del sistema...
+[11:52:00] Orden aleatorio activado: bsd-sockets bechmark_taps corosio asio-standalone boost-asio becnhmark_async_berkeley
+[11:52:00] Fase warmup activada
+[11:52:00] Warmup con asio-standalone
+[12:28:49] Cooldown AFTER project: 30s
+[12:29:19] Cache trashing best-effort (2048 MB)...
+[12:29:19] Dropping page cache (best-effort)
+[12:29:20] Cooldown BEFORE next project: 30s
+[12:29:50] Ejecutando benchmarks de bsd-sockets
+[13:00:41] PDF copiado: /home/jagarcia/Escritorio/TFM-Repo/global_results/bsd-sockets_report.pdf
+[13:00:41] Summary JSON copiado: /home/jagarcia/Escritorio/TFM-Repo/global_results/bsd-sockets_summary.json
+[13:00:41] Raw JSON copiado: /home/jagarcia/Escritorio/TFM-Repo/global_results/bsd-sockets_raw.json
+[13:00:41] CSV copiado: /home/jagarcia/Escritorio/TFM-Repo/global_results/bsd-sockets_raw.csv
+[13:00:41] Cooldown AFTER project: 30s
+[13:01:11] Cache trashing best-effort (2048 MB)...
+[13:01:11] Dropping page cache (best-effort)
+[13:01:11] Cooldown BEFORE next project: 30s
+[13:01:41] Ejecutando benchmarks de bechmark_taps

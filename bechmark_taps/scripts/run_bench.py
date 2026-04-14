@@ -8,8 +8,20 @@ import socket
 import math
 import csv
 import statistics
+from datetime import datetime
+from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+
+# PATHS
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SCRIPT_DIR.parent
+ROOT_DIR = PROJECT_DIR.parent
+
+IDLE_BASELINE_JSON = ROOT_DIR / "idle_baseline.json"
+USE_IDLE_BASELINE = True
+DEFAULT_IDLE_POWER_W = 0.0
 
 # CONFIG
 BUILD_DIRS = {
@@ -32,9 +44,9 @@ MAX_ENERGY_PATH = "/sys/class/powercap/intel-rapl:0/max_energy_range_uj"
 
 RESULTS_DIR = "./results"
 
-MACRO_BENCH_CASES = [1, 2, 4, 8, 16]
+MACRO_BENCH_CASES = [1, 2, 4, 8, 16, 32, 64]
 SERVER_THREADS = [1, 2, 4, 8]
-MACRO_REPETITIONS = 1
+MACRO_REPETITIONS = 27
 
 BENCH_ARGS = [
     "--benchmark_out_format=json"
@@ -43,11 +55,37 @@ BENCH_ARGS = [
 FINAL_RESULTS = os.path.join(RESULTS_DIR, "macro_bench_results.json")
 SUMMARY_RESULTS = os.path.join(RESULTS_DIR, "macro_bench_summary.json")
 CSV_RESULTS = os.path.join(RESULTS_DIR, "macro_bench_results.csv")
+PDF_RESULTS = os.path.join(RESULTS_DIR, "macro_bench_report.pdf")
 
 
 def ensure_results_dir():
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.chmod(RESULTS_DIR, 0o777)
+
+
+def load_idle_power_w():
+    if not USE_IDLE_BASELINE:
+        return DEFAULT_IDLE_POWER_W
+
+    if not IDLE_BASELINE_JSON.exists():
+        print(f"WARNING: no existe {IDLE_BASELINE_JSON}, usando DEFAULT_IDLE_POWER_W={DEFAULT_IDLE_POWER_W}")
+        return DEFAULT_IDLE_POWER_W
+
+    try:
+        with open(IDLE_BASELINE_JSON, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        value = float(data.get("watts_mean", DEFAULT_IDLE_POWER_W))
+        print(f"Using idle baseline from {IDLE_BASELINE_JSON}: {value:.6f} W")
+        return value
+
+    except Exception as e:
+        print(f"WARNING: error leyendo {IDLE_BASELINE_JSON}: {e}")
+        print(f"Using DEFAULT_IDLE_POWER_W={DEFAULT_IDLE_POWER_W}")
+        return DEFAULT_IDLE_POWER_W
+
+
+IDLE_POWER_W = load_idle_power_w()
 
 
 def read_energy():
@@ -278,7 +316,9 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
     e2 = read_energy()
 
     elapsed_s = t2 - t1
-    energy_j = energy_delta_j(e1, e2)
+    energy_j_raw = energy_delta_j(e1, e2)
+    idle_energy_j_estimated = IDLE_POWER_W * elapsed_s
+    energy_j_net = max(0.0, energy_j_raw - idle_energy_j_estimated)
 
     total_iterations = 0
     valid_json_files = []
@@ -315,7 +355,10 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
         "total_iterations": total_iterations,
         "downloads_per_process": (total_iterations / success) if success > 0 else 0.0,
         "elapsed_s": elapsed_s,
-        "energy_j": energy_j,
+        "idle_power_w": IDLE_POWER_W,
+        "energy_j_raw": energy_j_raw,
+        "idle_energy_j_estimated": idle_energy_j_estimated,
+        "energy_j": energy_j_net,
         "real_transferred_bytes": real_bytes,
         "throughput_mib_s": throughput_mib_s,
         "benchmark_json_files": valid_json_files
@@ -382,11 +425,11 @@ def compute_stats(values):
         "count": len(values),
         "mean": statistics.mean(values),
         "median": statistics.median(values),
+        "stdev": statistics.stdev(values) if len(values) > 1 else 0.0,
         "min": min(values),
         "max": max(values),
-        "p5": percentile(sorted_values, 5),
         "p25": percentile(sorted_values, 25),
-        "p75": percentile(sorted_values, 75),
+        "p50": percentile(sorted_values, 50),
         "p95": percentile(sorted_values, 95),
     }
 
@@ -406,6 +449,8 @@ def summarize_results(results):
 
     for (compiler, server_threads, parallel_bench_processes), items in sorted(grouped.items()):
         elapsed_values = [x["elapsed_s"] for x in items]
+        energy_raw_values = [x["energy_j_raw"] for x in items]
+        idle_estimated_values = [x["idle_energy_j_estimated"] for x in items]
         energy_values = [x["energy_j"] for x in items]
         throughput_values = [x["throughput_mib_s"] for x in items]
         downloads_values = [x["downloads_per_process"] for x in items]
@@ -419,6 +464,8 @@ def summarize_results(results):
             "parallel_bench_processes": parallel_bench_processes,
             "runs": len(items),
             "elapsed_s_stats": compute_stats(elapsed_values),
+            "energy_j_raw_stats": compute_stats(energy_raw_values),
+            "idle_energy_j_estimated_stats": compute_stats(idle_estimated_values),
             "energy_j_stats": compute_stats(energy_values),
             "throughput_mib_s_stats": compute_stats(throughput_values),
             "downloads_per_process_stats": compute_stats(downloads_values),
@@ -442,6 +489,9 @@ def write_csv(results):
         "total_iterations",
         "downloads_per_process",
         "elapsed_s",
+        "idle_power_w",
+        "energy_j_raw",
+        "idle_energy_j_estimated",
         "energy_j",
         "real_transferred_bytes",
         "throughput_mib_s",
@@ -496,9 +546,17 @@ def generate_plots(results):
         make_plot_for_metric(
             results,
             compiler,
+            "energy_j_raw",
+            "Energía bruta (J)",
+            f"plot_energy_raw_{compiler}.png"
+        )
+
+        make_plot_for_metric(
+            results,
+            compiler,
             "energy_j",
-            "Energía total (J)",
-            f"plot_energy_{compiler}.png"
+            "Energía neta (J)",
+            f"plot_energy_net_{compiler}.png"
         )
 
         make_plot_for_metric(
@@ -518,6 +576,277 @@ def generate_plots(results):
         )
 
 
+def fmt(v, decimals=6):
+    if v is None:
+        return "-"
+    if isinstance(v, int):
+        return str(v)
+    return f"{v:.{decimals}f}"
+
+
+def stats_to_multiline(stats):
+    if not stats:
+        return "-"
+    return (
+        f"n={stats['count']}\n"
+        f"mean={fmt(stats['mean'])}\n"
+        f"median={fmt(stats['median'])}\n"
+        f"stdev={fmt(stats['stdev'])}\n"
+        f"p25={fmt(stats['p25'])}\n"
+        f"p50={fmt(stats['p50'])}\n"
+        f"p95={fmt(stats['p95'])}\n"
+        f"min={fmt(stats['min'])}\n"
+        f"max={fmt(stats['max'])}"
+    )
+
+
+def add_text_page(pdf, title, lines, fontsize=11):
+    fig = plt.figure(figsize=(8.27, 11.69))
+    fig.clf()
+    plt.axis("off")
+
+    y = 0.97
+    plt.figtext(0.05, y, title, fontsize=16, fontweight="bold", ha="left", va="top")
+    y -= 0.04
+
+    for line in lines:
+        plt.figtext(0.05, y, line, fontsize=fontsize, ha="left", va="top", family="monospace")
+        y -= 0.025
+        if y < 0.05:
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+            fig = plt.figure(figsize=(8.27, 11.69))
+            fig.clf()
+            plt.axis("off")
+            y = 0.97
+
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+
+def add_table_page(pdf, title, columns, rows, fontsize=8):
+    fig, ax = plt.subplots(figsize=(11.69, 8.27))
+    ax.axis("off")
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=16)
+
+    table = ax.table(
+        cellText=rows,
+        colLabels=columns,
+        loc="center",
+        cellLoc="center"
+    )
+
+    table.auto_set_font_size(False)
+    table.set_fontsize(fontsize)
+    table.scale(1, 1.5)
+
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+
+def build_summary_table_rows(summary):
+    rows = []
+
+    for item in summary:
+        rows.append([
+            item["compiler"],
+            str(item["server_threads"]),
+            str(item["parallel_bench_processes"]),
+            str(item["runs"]),
+            stats_to_multiline(item["elapsed_s_stats"]),
+            stats_to_multiline(item["energy_j_raw_stats"]),
+            stats_to_multiline(item["idle_energy_j_estimated_stats"]),
+            stats_to_multiline(item["energy_j_stats"]),
+            stats_to_multiline(item["throughput_mib_s_stats"]),
+        ])
+
+    return rows
+
+
+def build_aux_summary_table_rows(summary):
+    rows = []
+
+    for item in summary:
+        rows.append([
+            item["compiler"],
+            str(item["server_threads"]),
+            str(item["parallel_bench_processes"]),
+            stats_to_multiline(item["downloads_per_process_stats"]),
+            stats_to_multiline(item["total_iterations_stats"]),
+            stats_to_multiline(item["success_stats"]),
+            stats_to_multiline(item["failed_stats"]),
+        ])
+
+    return rows
+
+
+def build_raw_results_rows(results):
+    rows = []
+
+    for item in results:
+        rows.append([
+            item["compiler"],
+            str(item["server_threads"]),
+            str(item["parallel_bench_processes"]),
+            str(item["repetition"]),
+            str(item["success"]),
+            str(item["failed"]),
+            str(item["total_iterations"]),
+            fmt(item["downloads_per_process"]),
+            fmt(item["elapsed_s"]),
+            fmt(item["energy_j_raw"]),
+            fmt(item["idle_energy_j_estimated"]),
+            fmt(item["energy_j"]),
+            fmt(item["throughput_mib_s"]),
+        ])
+
+    return rows
+
+
+def generate_pdf_report(final_data, summary, results):
+    with PdfPages(PDF_RESULTS) as pdf:
+        cover_lines = [
+            "Informe de benchmark macro",
+            f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            f"Fichero servido: {final_data['file_served']}",
+            f"Host: {final_data['host']}",
+            f"Compiladores: {', '.join(final_data['compilers'])}",
+            f"Puertos: {final_data['ports']}",
+            f"Casos paralelos: {final_data['cases']}",
+            f"Hebras de servidor: {final_data['server_threads']}",
+            f"Repeticiones: {final_data['repetitions']}",
+            f"Idle power baseline: {IDLE_POWER_W:.6f} W",
+            "",
+            "Metricas incluidas:",
+            "- tiempo total",
+            "- energia bruta",
+            "- energia idle estimada",
+            "- energia neta",
+            "- throughput agregado",
+            "- descargas por proceso",
+            "- total iterations",
+            "- success / failed",
+            "",
+            "Estadisticas incluidas:",
+            "- count",
+            "- mean",
+            "- median",
+            "- stdev",
+            "- p25",
+            "- p50",
+            "- p95",
+            "- min",
+            "- max",
+        ]
+        add_text_page(pdf, "Informe PDF de benchmark", cover_lines, fontsize=11)
+
+        config_lines = [
+            "CONFIGURACION",
+            "",
+            f"BUILD_DIRS = {final_data['build_dirs']}",
+            f"PORTS = {final_data['ports']}",
+            f"COMPILERS = {final_data['compilers']}",
+            f"FILE_TO_SERVE = {final_data['file_served']}",
+            f"HOST = {final_data['host']}",
+            f"MACRO_BENCH_CASES = {final_data['cases']}",
+            f"SERVER_THREADS = {final_data['server_threads']}",
+            f"MACRO_REPETITIONS = {final_data['repetitions']}",
+            f"IDLE_BASELINE_JSON = {IDLE_BASELINE_JSON}",
+            f"IDLE_POWER_W = {IDLE_POWER_W:.6f}",
+        ]
+        add_text_page(pdf, "Configuracion del experimento", config_lines, fontsize=10)
+
+        summary_columns = [
+            "compiler",
+            "server_threads",
+            "parallel_bench_processes",
+            "runs",
+            "elapsed_s_stats",
+            "energy_j_raw_stats",
+            "idle_energy_j_estimated_stats",
+            "energy_j_net_stats",
+            "throughput_mib_s_stats",
+        ]
+        summary_rows = build_summary_table_rows(summary)
+
+        chunk_size = 5
+        for i in range(0, len(summary_rows), chunk_size):
+            add_table_page(
+                pdf,
+                f"Resumen estadistico (parte {i // chunk_size + 1})",
+                summary_columns,
+                summary_rows[i:i + chunk_size],
+                fontsize=7
+            )
+
+        aux_columns = [
+            "compiler",
+            "server_threads",
+            "parallel_bench_processes",
+            "downloads_per_process_stats",
+            "total_iterations_stats",
+            "success_stats",
+            "failed_stats",
+        ]
+        aux_rows = build_aux_summary_table_rows(summary)
+
+        for i in range(0, len(aux_rows), chunk_size):
+            add_table_page(
+                pdf,
+                f"Resumen auxiliar (parte {i // chunk_size + 1})",
+                aux_columns,
+                aux_rows[i:i + chunk_size],
+                fontsize=7
+            )
+
+        for compiler in final_data["compilers"]:
+            plot_files = [
+                os.path.join(RESULTS_DIR, f"plot_elapsed_{compiler}.png"),
+                os.path.join(RESULTS_DIR, f"plot_energy_raw_{compiler}.png"),
+                os.path.join(RESULTS_DIR, f"plot_energy_net_{compiler}.png"),
+                os.path.join(RESULTS_DIR, f"plot_throughput_{compiler}.png"),
+                os.path.join(RESULTS_DIR, f"plot_downloads_per_process_{compiler}.png"),
+            ]
+
+            for plot_path in plot_files:
+                if os.path.exists(plot_path):
+                    fig = plt.figure(figsize=(8.27, 11.69))
+                    plt.axis("off")
+                    img = plt.imread(plot_path)
+                    plt.imshow(img)
+                    plt.title(os.path.basename(plot_path), fontsize=14)
+                    pdf.savefig(fig, bbox_inches="tight")
+                    plt.close(fig)
+
+        raw_columns = [
+            "compiler",
+            "server_threads",
+            "parallel_bench_processes",
+            "repetition",
+            "success",
+            "failed",
+            "total_iterations",
+            "downloads_per_process",
+            "elapsed_s",
+            "energy_j_raw",
+            "idle_energy_j_estimated",
+            "energy_j_net",
+            "throughput_mib_s",
+        ]
+        raw_rows = build_raw_results_rows(results)
+
+        raw_chunk = 10
+        for i in range(0, len(raw_rows), raw_chunk):
+            add_table_page(
+                pdf,
+                f"Resultados brutos por ejecucion (parte {i // raw_chunk + 1})",
+                raw_columns,
+                raw_rows[i:i + raw_chunk],
+                fontsize=7
+            )
+
+
 def print_console_summary(summary):
     print("")
     print("==== RESUMEN ESTADISTICO ====")
@@ -528,7 +857,8 @@ def print_console_summary(summary):
         benches = item["parallel_bench_processes"]
 
         elapsed = item["elapsed_s_stats"]
-        energy = item["energy_j_stats"]
+        energy_raw = item["energy_j_raw_stats"]
+        energy_net = item["energy_j_stats"]
         throughput = item["throughput_mib_s_stats"]
 
         print(
@@ -541,9 +871,14 @@ def print_console_summary(summary):
             f"min={elapsed['min']:.6f} max={elapsed['max']:.6f}"
         )
         print(
-            f"  energia_j: mean={energy['mean']:.6f} "
-            f"median={energy['median']:.6f} "
-            f"min={energy['min']:.6f} max={energy['max']:.6f}"
+            f"  energia_bruta_j: mean={energy_raw['mean']:.6f} "
+            f"median={energy_raw['median']:.6f} "
+            f"min={energy_raw['min']:.6f} max={energy_raw['max']:.6f}"
+        )
+        print(
+            f"  energia_neta_j: mean={energy_net['mean']:.6f} "
+            f"median={energy_net['median']:.6f} "
+            f"min={energy_net['min']:.6f} max={energy_net['max']:.6f}"
         )
         print(
             f"  throughput_mib_s: mean={throughput['mean']:.6f} "
@@ -572,6 +907,8 @@ def main():
         "repetitions": MACRO_REPETITIONS,
         "compilers": COMPILERS,
         "build_dirs": BUILD_DIRS,
+        "idle_baseline_json": str(IDLE_BASELINE_JSON),
+        "idle_power_w": IDLE_POWER_W,
         "results": all_results
     }
 
@@ -590,17 +927,21 @@ def main():
             "repetitions": MACRO_REPETITIONS,
             "compilers": COMPILERS,
             "build_dirs": BUILD_DIRS,
+            "idle_baseline_json": str(IDLE_BASELINE_JSON),
+            "idle_power_w": IDLE_POWER_W,
             "summary": summary
         }, f, indent=4)
 
     write_csv(all_results)
     generate_plots(all_results)
+    generate_pdf_report(final, summary, all_results)
     print_console_summary(summary)
 
     print("Done.")
     print(f"Raw results: {FINAL_RESULTS}")
     print(f"Summary: {SUMMARY_RESULTS}")
     print(f"CSV: {CSV_RESULTS}")
+    print(f"PDF: {PDF_RESULTS}")
     print(f"Plots directory: {RESULTS_DIR}")
 
 

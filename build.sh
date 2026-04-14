@@ -31,6 +31,22 @@ run_privileged() {
   fi
 }
 
+ensure_python_pkg() {
+  local module="$1"
+  local pip_name="$2"
+
+  if python3 -c "import ${module}" >/dev/null 2>&1; then
+    log "Modulo Python '${module}' ya disponible"
+    return
+  fi
+
+  log "Instalando modulo Python '${pip_name}'..."
+  if ! python3 -m pip install --user "$pip_name"; then
+    echo "Error: no se pudo instalar $pip_name"
+    exit 1
+  fi
+}
+
 ensure_matplotlib() {
   if python3 -c 'import matplotlib' >/dev/null 2>&1; then
     log "python3-matplotlib ya esta disponible"
@@ -43,7 +59,7 @@ ensure_matplotlib() {
     run_privileged apt-get install -y python3-matplotlib
   else
     log "apt-get no disponible; intentando con pip"
-    if ! python3 -m pip install matplotlib; then
+    if ! python3 -m pip install --user matplotlib; then
       echo "Error: no se pudo instalar matplotlib automaticamente"
       exit 1
     fi
@@ -76,7 +92,9 @@ build_project() {
 
 main() {
   log "Raiz del repositorio: $ROOT_DIR"
+
   ensure_matplotlib
+  ensure_python_pkg pypdf pypdf
 
   for project_dir in "${PROJECT_DIRS[@]}"; do
     build_project "$project_dir"
