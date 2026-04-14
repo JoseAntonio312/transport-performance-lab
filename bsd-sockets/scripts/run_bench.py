@@ -30,10 +30,9 @@ BUILD_DIRS = {
 }
 
 PORTS = {
-    "gcc": 8080,
-    "clang": 8081,
+    "gcc": 8100,
+    "clang": 8101,
 }
-
 COMPILERS = ["gcc", "clang"]
 
 FILE_TO_SERVE = ".././files/1GB.bin"

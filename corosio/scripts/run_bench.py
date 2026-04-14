@@ -30,8 +30,8 @@ BUILD_DIRS = {
 }
 
 PORTS = {
-    "gcc": 8080,
-    "clang": 8081,
+    "gcc": 8090,
+    "clang": 8091,
 }
 
 COMPILERS = ["gcc", "clang"]

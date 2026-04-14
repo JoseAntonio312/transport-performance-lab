@@ -18,3 +18,12 @@
 [13:01:11] Dropping page cache (best-effort)
 [13:01:11] Cooldown BEFORE next project: 30s
 [13:01:41] Ejecutando benchmarks de bechmark_taps
+[15:15:10] PDF copiado: /home/jagarcia/Escritorio/TFM-Repo/global_results/bechmark_taps_report.pdf
+[15:15:10] Summary JSON copiado: /home/jagarcia/Escritorio/TFM-Repo/global_results/bechmark_taps_summary.json
+[15:15:10] Raw JSON copiado: /home/jagarcia/Escritorio/TFM-Repo/global_results/bechmark_taps_raw.json
+[15:15:10] CSV copiado: /home/jagarcia/Escritorio/TFM-Repo/global_results/bechmark_taps_raw.csv
+[15:15:10] Cooldown AFTER project: 30s
+[15:15:40] Cache trashing best-effort (2048 MB)...
+[15:15:40] Dropping page cache (best-effort)
+[15:15:40] Cooldown BEFORE next project: 30s
+[15:16:10] Ejecutando benchmarks de corosio
