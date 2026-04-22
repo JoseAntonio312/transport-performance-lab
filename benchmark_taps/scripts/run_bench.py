@@ -67,7 +67,7 @@ LOGS_DIR = RESULTS_DIR / "logs"
 
 MACRO_BENCH_CASES = [1, 2, 4, 8, 16]
 SERVER_THREADS = [1, 2, 4, 8]
-MACRO_REPETITIONS = 25
+MACRO_REPETITIONS = 15
 
 BENCH_ARGS = [
     "--benchmark_out_format=json"
@@ -562,44 +562,26 @@ def stop_bench_process(proc):
 
 def parse_benchmark_json(path):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path) as f:
             data = json.load(f)
 
-        benchmarks = data.get("benchmarks", [])
-        if not isinstance(benchmarks, list) or not benchmarks:
-            return False, 0
-
         total_iterations = 0
-        saw_valid_non_aggregate_row = False
 
-        for entry in benchmarks:
-            if not isinstance(entry, dict):
-                continue
-
+        for entry in data.get("benchmarks", []):
             if entry.get("error_occurred", False):
                 return False, 0
 
-            run_type = entry.get("run_type")
-
-            if run_type == "aggregate":
-                continue
-
-            saw_valid_non_aggregate_row = True
-
-            iterations = entry.get("iterations")
-            if isinstance(iterations, int) and iterations > 0:
-                total_iterations += iterations
-
-        if not saw_valid_non_aggregate_row:
-            return False, 0
+            if entry.get("run_type") == "iteration":
+                total_iterations += entry.get("iterations", 0)
 
         if total_iterations <= 0:
-            total_iterations = 1
+            return False, 0
 
         return True, total_iterations
 
     except Exception:
         return False, 0
+
 
 
 def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file_size_bytes, port):
@@ -625,7 +607,6 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
         for proc, _, err_file in processes:
             proc.wait()
             err_file.close()
-
     except KeyboardInterrupt:
         for proc, _, err_file in processes:
             stop_bench_process(proc)
@@ -648,33 +629,23 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
     success = 0
     failed = 0
 
-    for proc, path, _ in processes:
-        process_ok = (proc.returncode == 0)
-        json_ok = False
-        iters = 0
-
+    for path in outputs:
         if os.path.exists(path):
-            json_ok, iters = parse_benchmark_json(path)
-
-        if process_ok and (json_ok or os.path.exists(path)):
-            success += 1
-            total_iterations += iters if iters > 0 else 1
-            if os.path.exists(path):
+            valid, iters = parse_benchmark_json(path)
+            if valid:
+                total_iterations += iters
                 valid_json_files.append(str(path))
+                success += 1
+            else:
+                failed += 1
         else:
             failed += 1
 
-    completed_downloads = success
-    real_bytes = completed_downloads * file_size_bytes
+    real_bytes = total_iterations * file_size_bytes
 
     throughput_mib_s = (
         real_bytes / (1024 * 1024) / elapsed_s
         if elapsed_s > 0 else 0.0
-    )
-
-    downloads_per_process = (
-        completed_downloads / success
-        if success > 0 else 0.0
     )
 
     return {
@@ -686,7 +657,7 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
         "success": success,
         "failed": failed,
         "total_iterations": total_iterations,
-        "downloads_per_process": downloads_per_process,
+        "downloads_per_process": (total_iterations / success) if success > 0 else 0.0,
         "elapsed_s": elapsed_s,
         "idle_power_w": IDLE_POWER_W,
         "energy_j_raw": energy_j_raw,
@@ -694,7 +665,7 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
         "energy_j": energy_j_net,
         "real_transferred_bytes": real_bytes,
         "throughput_mib_s": throughput_mib_s,
-        "benchmark_json_files": valid_json_files,
+        "benchmark_json_files": valid_json_files
     }
 
 

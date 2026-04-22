@@ -1,6 +1,6 @@
-# ASIO STANDALONE - File Transfer and Benchmarking in C++23
+# ASYNC-BERKELEY - File Transfer and Benchmarking in C++23
 
-This project provides a **C++23** experimental baseline to study file transfer over **standalone Asio**, with a focus on:
+This project provides a **C++23** experimental baseline to study file transfer over **async-berkeley**, with a focus on:
 
 - a functional **TCP server** implementation;
 - a functional **TCP client** implementation;
@@ -22,13 +22,13 @@ The goal is to first build a clean, reproducible, and minimal implementation and
 - percentiles;
 - minimum and maximum values.
 
-In addition to comparing transport technologies, this version also supports comparing executables built with **G++** and **Clang++**, in order to evaluate whether the compiler introduces measurable differences in a **standalone Asio** implementation.
+In addition to comparing transport technologies, this version also supports comparing executables built with **G++** and **Clang++**, in order to evaluate whether the compiler introduces measurable differences in an **async-berkeley** implementation.
 
 ---
 
 ## Project goal
 
-The current goal of the project is to maintain a dedicated **standalone Asio** implementation as an experimental baseline to study:
+The current goal of the project is to maintain a dedicated **async-berkeley** implementation as an experimental baseline to study:
 
 - file transfer;
 - concurrency with multiple clients;
@@ -45,6 +45,26 @@ At this stage, the implementation follows the same simplified experimental model
 - the benchmark measures one complete download per iteration.
 
 This keeps the implementation as small and comparable as possible while avoiding extra protocol logic that could distort the measurements.
+
+---
+
+## About async-berkeley
+
+The **async-berkeley** library used in this project is **not authored by the author of this repository**. The library is used here as a transport layer to build the experimental:
+
+- TCP server;
+- TCP client;
+- TCP benchmark.
+
+The original library lives in its own repository and should remain clearly separated from the benchmarking project itself.
+
+The work specific to this repository focuses on:
+
+- integrating async-berkeley into a standalone benchmarking project;
+- adapting the transport implementation to the experimental methodology;
+- keeping the implementation comparable to the BSD sockets version;
+- running performance and energy campaigns on top of that base;
+- repeating those campaigns with binaries compiled using different compilers.
 
 ---
 
@@ -72,7 +92,7 @@ That protocol belonged to an earlier version. The current version is intentional
 ## Project structure
 
 ```text
-asio-standalone/
+becnhmark_async_berkeley/
 ├── benchmarks/
 │   ├── CMakeLists.txt
 │   └── bench_tcp.cpp
@@ -95,6 +115,19 @@ asio-standalone/
 └── CMakeLists.txt
 ```
 
+A common layout is to keep the library outside the benchmark project, for example:
+
+```text
+~/Desktop/TFM/
+├── async-berkeley/
+└── becnhmark_async_berkeley/
+```
+
+This separation makes the setup cleaner because it clearly distinguishes:
+
+- the **base library**;
+- the **experimental project** that depends on it.
+
 ---
 
 ## Main components
@@ -111,7 +144,7 @@ The server:
 - sends the same raw file bytes to every connected client;
 - uses minimal console output to avoid adding measurement noise.
 
-Concurrency is handled with **standalone Asio** using asynchronous operations and C++ coroutines.
+The current server is intentionally kept very close in spirit to the BSD sockets implementation, but using **async-berkeley** socket abstractions where appropriate.
 
 ### 2. TCP client
 
@@ -147,6 +180,98 @@ The Python script:
 - writes raw results, summaries, plots, and PDF reports.
 
 In the current workflow, the script is also designed to distinguish between **G++** and **Clang++** builds so that both compiler families can be compared under equivalent conditions.
+
+---
+
+## Methodological adaptation for async-berkeley
+
+This project does not try to demonstrate every feature of async-berkeley. Instead, it adapts async-berkeley to the benchmarking methodology used across the repository.
+
+### 1. Separation between library and experiment
+
+The benchmark project is intentionally kept separate from the async-berkeley library itself. This makes it easier to:
+
+- preserve the original library independently;
+- avoid mixing library internals with benchmark infrastructure;
+- compare this implementation with the other transport implementations;
+- keep the project easier to maintain and reproduce.
+
+### 2. async-berkeley as the socket layer
+
+The implementation relies on the async-berkeley API for the socket layer, using abstractions such as:
+
+- `io::socket::socket_handle`
+- `io::bind`
+- `io::listen`
+- `io::accept`
+- `io::connect`
+- `io::sendmsg`
+- `io::recvmsg`
+- `io::fcntl`
+- `io::setsockopt`
+
+This makes it possible to build the server, client, and benchmark with the library while preserving a structure that stays experimentally comparable to the BSD sockets version.
+
+### 3. Why the server threading model is not written like Corosio
+
+The server **could** be made to look a bit more like the Corosio thread-join style, but the current async-berkeley version is written differently on purpose.
+
+In the Corosio server, the threading model is naturally tied to:
+
+- an `io_context`;
+- coroutine scheduling;
+- one event system shared across worker threads.
+
+That makes a pattern like this natural:
+
+```cpp
+for (int i = 0; i < threads; ++i) {
+    pool[i] = std::thread([&ctx]() {
+        ctx.run();
+    });
+}
+
+for (int i = 0; i < threads; ++i) {
+    pool[i].join();
+}
+```
+
+In the async-berkeley version used here, the implementation is closer to a **manual worker model**:
+
+- one accept loop assigns clients to workers;
+- each worker manages its own client set;
+- each worker uses `poll()` directly on its own descriptors;
+- wake-up pipes are used to notify workers about new clients.
+
+So the current code is not centered around a shared coroutine/event-loop runtime in the same way. Because of that, the server is structured around:
+
+- an accept thread path in `main()`;
+- a fixed set of worker threads;
+- one blocking worker loop per worker.
+
+That is why it does not look exactly like the Corosio pattern.
+
+### 4. Can it be made more similar to Corosio?
+
+Yes, **the thread creation and joining style can be made cosmetically more similar** if you want.
+
+For example, you can still use:
+
+- a fixed-size thread array;
+- one loop to create the threads;
+- one loop to join the threads.
+
+That part is easy.
+
+What cannot be made truly identical is the deeper execution model:
+
+- Corosio relies on coroutine-driven asynchronous execution;
+- this async-berkeley server version is organized around explicit worker loops and `poll()`.
+
+So the answer is:
+
+- **yes**, the thread array and `join()` style can be made more visually similar to Corosio;
+- **no**, the underlying control flow is not really the same, and that is the reason the current server was written differently.
 
 ---
 
@@ -189,15 +314,6 @@ sudo apt update
 sudo apt install cmake
 ```
 
-### Standalone Asio
-
-In this environment, standalone Asio can be installed from system packages:
-
-```bash
-sudo apt update
-sudo apt install libasio-dev
-```
-
 ### Google Benchmark
 
 ```bash
@@ -225,6 +341,22 @@ If `python3-pypdf` is not available in your distribution, use a virtual environm
 
 ---
 
+## async-berkeley location
+
+The build script expects the async-berkeley library to exist at a local path defined inside `build_release.sh`.
+
+Example:
+
+```bash
+ASYNC_BERKELEY_DIR="/home/jagarcia/Desktop/TFM/async-berkeley/async-berkeley"
+```
+
+You should replace that with the path where **you** have installed the library in your machine.
+
+That means the path in the script is not universal; it is just the local installation path used on the machine where the benchmark project is being built.
+
+---
+
 ## Build
 
 The project is intended to be built in **Release** mode.
@@ -245,6 +377,18 @@ or:
 
 ```bash
 sudo ./build_release.sh clang
+```
+
+### Manual example
+
+```bash
+sudo rm -rf build-gcc
+sudo cmake -S . -B build-gcc \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DASYNC_BERKELEY_DIR=/home/jagarcia/Desktop/TFM/async-berkeley/async-berkeley \
+  -DCMAKE_C_COMPILER=/usr/local/gcc-14.1.0/bin/gcc-14.1.0 \
+  -DCMAKE_CXX_COMPILER=/usr/local/gcc-14.1.0/bin/g++-14.1.0
+sudo cmake --build build-gcc --config Release -j"$(nproc)" --target tcpserver tcpclient bench_tcp
 ```
 
 ### Build philosophy
@@ -378,7 +522,7 @@ The script:
 6. validates and processes the `micro_*.json` files;
 7. generates machine-readable and human-readable outputs.
 
-Depending on the current script version, it can also:
+Depending on the current `run_bench.py` version, it can also:
 
 - separate raw outputs, plots, reports, and logs into different subdirectories;
 - generate a main PDF report;
@@ -493,7 +637,7 @@ If energy measurements are important, it is also recommended to:
 
 ## Notes on the current implementation
 
-This current standalone Asio version has been simplified to match the experimental design used in the rest of the repository:
+This current async-berkeley version has been simplified to match the experimental design used in the rest of the repository:
 
 - no extra application-level transfer header;
 - no transmitted filename metadata;
@@ -503,6 +647,32 @@ This current standalone Asio version has been simplified to match the experiment
 - server-side file payload is kept out of the hot path as much as possible.
 
 The objective is to make the comparison across transport technologies and compilers as homogeneous as possible while minimizing implementation-specific overhead that is not central to the transport experiment itself.
+
+---
+
+## Methodological note
+
+If the async-berkeley version performs better than the BSD sockets version in a given set of tests, that does **not** automatically imply that async-berkeley is always faster in general.
+
+The result must always be interpreted as:
+
+- dependent on the specific implementation;
+- dependent on the traffic pattern;
+- dependent on the number of clients;
+- dependent on file and buffer size;
+- dependent on the internal overhead of each abstraction.
+
+Therefore, the reported results should always be presented as experimental results for the evaluated implementation and environment.
+
+---
+
+## Authorship note
+
+The **async-berkeley library dependency itself was not developed by the author of this benchmarking project**. If this repository is distributed academically or publicly, it is strongly recommended to explicitly reference:
+
+- the original async-berkeley repository;
+- the original authorship;
+- the applicable license.
 
 ---
 

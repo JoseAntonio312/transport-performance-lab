@@ -12,5 +12,8 @@ build-gcc/
 results/
 **/results/
 
+global_results/
+**/global_results/
+
 /files/*
 !/files/.gitkeep

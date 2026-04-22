@@ -2,187 +2,161 @@
  * Copyright (c) 2026 José Antonio García Montañez
  *
  * TCP file client with Corosio
- * Minimal output version for performance and energy measurements.
+ * Minimal raw-byte client for performance and energy measurements.
+ *
  */
 
-#include <boost/corosio.hpp>
-#include <boost/capy/task.hpp>
-#include <boost/capy/ex/run_async.hpp>
-#include <boost/capy/buffers.hpp>
-
-#include <arpa/inet.h>
-
-#include <cstdint>
-#include <cstring>
+#include <array>
+#include <cstddef>
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <vector>
 
-// Puerto por defecto
-constexpr int DEFAULT_PORT = 8080;
-
-// Buffer de recepcion
-constexpr std::size_t BUFFER_SIZE = 8192;
+#include <boost/capy/buffers.hpp>
+#include <boost/capy/ex/run_async.hpp>
+#include <boost/capy/task.hpp>
+#include <boost/corosio.hpp>
 
 namespace corosio = boost::corosio;
 namespace capy = boost::capy;
 
-// Recibir exactamente N bytes
-static capy::task<bool> recv_exact(corosio::tcp_socket& sock, void* buffer, std::size_t total) {
-    char* ptr = static_cast<char*>(buffer);
-    std::size_t received = 0;
+// Default remote TCP port.
+constexpr int DEFAULT_PORT = 8080;
 
-    while (received < total) {
-        auto [ec, n] = co_await sock.read_some(
-            capy::mutable_buffer(ptr + received, total - received));
+// Fixed receive buffer size used for socket reads.
+constexpr std::size_t BUFFER_SIZE = 8192;
 
-        if (ec || n == 0) {
-            co_return false;
-        }
+// Connect to the server and receive raw bytes until EOF.
+// All received data is written directly to the output file.
+//
+// Return value:
+// - 0 on success
+// - 1 on failure
+static capy::task<int> run_client(
+    corosio::io_context& ctx,
+    const std::string& server_ip,
+    int port,
+    const std::string& output_path
+) {
+    // Create the TCP socket bound to the Corosio I/O context.
+    corosio::tcp_socket sock(ctx);
 
-        received += static_cast<std::size_t>(n);
-    }
-
-    co_return true;
-}
-
-// Lectura uint32_t en red
-static capy::task<std::uint32_t> read_u32(corosio::tcp_socket& sock) {
-    std::uint32_t net = 0;
-
-    if (!(co_await recv_exact(sock, &net, sizeof(net)))) {
-        throw std::runtime_error("Error leyendo uint32.");
-    }
-
-    co_return ntohl(net);
-}
-
-// Lectura uint64_t en red
-static capy::task<std::uint64_t> read_u64(corosio::tcp_socket& sock) {
-    std::uint32_t high_net = 0;
-    std::uint32_t low_net = 0;
-
-    if (!(co_await recv_exact(sock, &high_net, sizeof(high_net))) ||
-        !(co_await recv_exact(sock, &low_net, sizeof(low_net)))) {
-        throw std::runtime_error("Error leyendo uint64.");
-    }
-
-    std::uint64_t high = ntohl(high_net);
-    std::uint64_t low = ntohl(low_net);
-
-    co_return (high << 32) | low;
-}
-
-static capy::task<int> run_client(corosio::io_context& ioc,
-                                  const std::string& server_ip,
-                                  int port,
-                                  const std::string& custom_output_name) {
-    corosio::tcp_socket sock(ioc);
-
+    // Open the socket before connecting.
     sock.open();
 
+    // Start the asynchronous TCP connection.
     auto [connect_ec] = co_await sock.connect(
-        corosio::endpoint(corosio::endpoint(server_ip),
-                          static_cast<unsigned short>(port)));
+        corosio::endpoint(corosio::endpoint(server_ip), static_cast<unsigned short>(port))
+    );
 
+    // Abort if the connection fails.
     if (connect_ec) {
-        std::cerr << "Error: connect: " << connect_ec.message() << "\n";
+        std::cerr << "connect: " << connect_ec.message() << "\n";
         co_return 1;
     }
 
-    try {
-        std::uint32_t filename_size = co_await read_u32(sock);
-        if (filename_size == 0 || filename_size > 4096) {
-            throw std::runtime_error("Tamano de nombre invalido.");
+    // Open the destination file in binary mode.
+    std::ofstream out(output_path, std::ios::binary);
+    if (!out) {
+        std::cerr << "Failed to open output file: " << output_path << "\n";
+        sock.close();
+        co_return 1;
+    }
+
+    // Fixed stack-owned receive buffer.
+    // This avoids dynamic allocation during the transfer loop.
+    std::array<char, BUFFER_SIZE> buffer{};
+
+    while (true) {
+        // Read up to BUFFER_SIZE bytes from the socket.
+        auto [read_ec, n] = co_await sock.read_some(
+            capy::mutable_buffer(buffer.data(), buffer.size())
+        );
+
+        // Any socket read error is treated as a failure.
+        if (read_ec) {
+            std::cerr << "recv: " << read_ec.message() << "\n";
+            sock.close();
+            co_return 1;
         }
 
-        std::string filename(filename_size, '\0');
-        if (!(co_await recv_exact(sock, filename.data(), filename_size))) {
-            throw std::runtime_error("Error leyendo nombre de fichero.");
+        // A zero-length read means EOF: the server closed the connection
+        // after sending the whole file.
+        if (n == 0) {
+            break;
         }
 
-        std::uint64_t file_size = co_await read_u64(sock);
-
-        const std::string& output_name =
-            custom_output_name.empty() ? filename : custom_output_name;
-
-        std::ofstream out(output_name, std::ios::binary);
+        // Write the received bytes directly to disk.
+        out.write(buffer.data(), static_cast<std::streamsize>(n));
         if (!out) {
-            throw std::runtime_error("No se pudo crear el fichero de salida: " + output_name);
+            std::cerr << "Failed to write output file.\n";
+            sock.close();
+            co_return 1;
         }
-
-        std::vector<char> buffer(BUFFER_SIZE);
-        std::uint64_t remaining = file_size;
-
-        while (remaining > 0) {
-            std::size_t chunk = static_cast<std::size_t>(
-                remaining > buffer.size() ? buffer.size() : remaining
-            );
-
-            auto [read_ec, n] = co_await sock.read_some(
-                capy::mutable_buffer(buffer.data(), chunk));
-
-            if (read_ec) {
-                throw std::runtime_error(std::string("Error en recv: ") + read_ec.message());
-            }
-
-            if (n == 0) {
-                throw std::runtime_error("Conexion cerrada antes de terminar la descarga.");
-            }
-
-            out.write(buffer.data(), static_cast<std::streamsize>(n));
-            if (!out) {
-                throw std::runtime_error("Error escribiendo el fichero de salida.");
-            }
-
-            remaining -= static_cast<std::uint64_t>(n);
-        }
-
-        out.close();
-        sock.close();
-        co_return 0;
-
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << "\n";
-        sock.close();
-        co_return 1;
     }
+
+    // Clean shutdown path.
+    out.close();
+    sock.close();
+    co_return 0;
 }
 
 int main(int argc, char* argv[]) {
     if (argc < 2 || argc > 4) {
-        std::cerr << "Uso: " << argv[0] << " <ip_servidor> [puerto] [nombre_salida]\n";
+        std::cerr << "Usage: " << argv[0] << " <server_ip> [port] [output_file]\n";
         return 1;
     }
 
-    std::string server_ip = argv[1];
+    const std::string server_ip = argv[1];
     int port = DEFAULT_PORT;
-    std::string custom_output_name;
+    std::string output_path = "downloaded.bin";
 
     if (argc >= 3) {
         port = std::stoi(argv[2]);
         if (port <= 0 || port > 65535) {
-            std::cerr << "Puerto invalido.\n";
+            std::cerr << "Invalid port.\n";
             return 1;
         }
     }
 
     if (argc == 4) {
-        custom_output_name = argv[3];
+        output_path = argv[3];
     }
 
     try {
-        corosio::io_context ioc;
+        corosio::io_context ctx;
         int result = 1;
 
-        capy::run_async(ioc.get_executor())(
+        // run_client(...) returns capy::task<int>, but it is still just a coroutine object.
+        // It does not run by itself until something schedules/starts it.
+        //
+        // capy::run_async(...) is used here to launch asynchronous work on the executor.
+        // We wrap run_client(...) inside another coroutine:
+        //
+        //   [&]() -> capy::task<void> { result = co_await run_client(...); }()
+        //
+        // Why this extra wrapper exists:
+        // 1. run_client returns int, but here we want to store that result into the local
+        //    variable 'result' owned by main().
+        // 2. The outer coroutine becomes the scheduled top-level task.
+        // 3. Inside that top-level task, we co_await the real client coroutine and copy
+        //    its final integer status into 'result'.
+        //
+        // So the structure is:
+        // - outer task<void>: launchable root coroutine
+        // - inner task<int>: actual client logic
+        //
+        // This is why it may look like a "double task", even though only one real client
+        // operation is being performed.
+        capy::run_async(ctx.get_executor())(
             [&]() -> capy::task<void> {
-                result = co_await run_client(ioc, server_ip, port, custom_output_name);
+                result = co_await run_client(ctx, server_ip, port, output_path);
             }()
         );
 
-        ioc.run();
+        // Drive the event loop until all scheduled asynchronous work completes.
+        ctx.run();
+
         return result;
 
     } catch (const std::exception& e) {

@@ -1,23 +1,23 @@
 ==== BENCHMARK SYSTEM INFO ====
-Timestamp: 2026-04-14 11:47:00
+Timestamp: 2026-04-22 16:55:58
 
 ==== uname -a ====
-Linux jagarcia-B650-AORUS-ELITE-AX 6.17.0-19-generic #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Fri Mar  6 23:08:46 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+Linux jagarcia-B650-AORUS-ELITE-AX 6.17.0-20-generic #20~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Thu Mar 19 01:28:37 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
 
 ==== hostnamectl ====
  Static hostname: jagarcia-B650-AORUS-ELITE-AX
        Icon name: computer-desktop
          Chassis: desktop 🖥️
       Machine ID: dcbefd0328234ce4adcc9672d77866c3
-         Boot ID: 6b06c300ed934424b3a34ca2337ed018
+         Boot ID: b1f812cb2e104613ab00c2a36c9548db
 Operating System: Ubuntu 24.04.4 LTS
-          Kernel: Linux 6.17.0-19-generic
+          Kernel: Linux 6.17.0-20-generic
     Architecture: x86-64
  Hardware Vendor: Gigabyte Technology Co., Ltd.
   Hardware Model: B650 AORUS ELITE AX
 Firmware Version: FB1
    Firmware Date: Wed 2024-05-22
-    Firmware Age: 1y 10month 3w 1d
+    Firmware Age: 1y 11month
 
 ==== lscpu ====
 Arquitectura:                             x86_64
@@ -38,7 +38,7 @@ Núcleo(s) por «socket»:                   8
 «Socket(s)»:                              1
 Revisión:                                 2
 Aumento de frecuencia:                    activada
-CPU(s) factor de escala MHz:              73%
+CPU(s) factor de escala MHz:              75%
 CPU MHz máx.:                             5392,8721
 CPU MHz mín.:                             422,3340
 BogoMIPS:                                 7585,28
@@ -72,71 +72,72 @@ Vulnerabilidad Vmscape:                   Mitigation; IBPB before exit to usersp
 
 ==== free -h ====
                total       usado       libre  compartido   búf/caché  disponible
-Mem:            30Gi       4,4Gi        18Gi       137Mi       7,4Gi        25Gi
+Mem:            30Gi       3,2Gi        25Gi       118Mi       1,6Gi        27Gi
 Inter:         8,0Gi          0B       8,0Gi
 
 ==== lsblk ====
 NAME        MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS
 loop0         7:0    0 336,1M  1 loop /snap/code/226
-loop1         7:1    0     4K  1 loop /snap/bare/5
-loop2         7:2    0  55,5M  1 loop /snap/core18/2979
-loop3         7:3    0  63,8M  1 loop /snap/core20/2717
-loop4         7:4    0    74M  1 loop /snap/core22/2292
+loop1         7:1    0 361,6M  1 loop /snap/code/233
+loop2         7:2    0     4K  1 loop /snap/bare/5
+loop3         7:3    0  55,5M  1 loop /snap/core18/2979
+loop4         7:4    0  63,8M  1 loop /snap/core20/2717
 loop5         7:5    0  55,5M  1 loop /snap/core18/2999
-loop6         7:6    0    74M  1 loop /snap/core22/2411
-loop7         7:7    0  66,8M  1 loop /snap/core24/1499
-loop8         7:8    0  66,8M  1 loop /snap/core24/1587
-loop9         7:9    0 251,7M  1 loop /snap/firefox/7766
-loop10        7:10   0 254,9M  1 loop /snap/firefox/7967
-loop11        7:11   0 162,5M  1 loop /snap/spotify/93
-loop12        7:12   0  16,4M  1 loop /snap/firmware-updater/216
-loop13        7:13   0 164,8M  1 loop /snap/gnome-3-28-1804/198
-loop14        7:14   0 531,4M  1 loop /snap/gnome-42-2204/247
-loop15        7:15   0 606,1M  1 loop /snap/gnome-46-2404/153
-loop16        7:16   0  91,7M  1 loop /snap/gtk-common-themes/1535
-loop17        7:17   0   395M  1 loop /snap/mesa-2404/1165
-loop18        7:18   0  10,8M  1 loop /snap/snap-store/1270
-loop19        7:19   0  15,6M  1 loop /snap/snap-store/1338
-loop20        7:20   0  48,1M  1 loop /snap/snapd/25935
-loop21        7:21   0  48,4M  1 loop /snap/snapd/26382
-loop22        7:22   0   576K  1 loop /snap/snapd-desktop-integration/343
-loop23        7:23   0 161,2M  1 loop /snap/spotify/92
-loop24        7:24   0 227,1M  1 loop /snap/thunderbird/1029
-loop25        7:25   0 227,1M  1 loop /snap/thunderbird/1040
-loop26        7:26   0   580K  1 loop /snap/snapd-desktop-integration/361
-loop27        7:27   0  16,4M  1 loop /snap/firmware-updater/224
-loop28        7:28   0 361,6M  1 loop /snap/code/233
+loop6         7:6    0  63,8M  1 loop /snap/core20/2769
+loop7         7:7    0    74M  1 loop /snap/core22/2292
+loop8         7:8    0    74M  1 loop /snap/core22/2411
+loop9         7:9    0  66,8M  1 loop /snap/core24/1499
+loop10        7:10   0  66,8M  1 loop /snap/core24/1587
+loop11        7:11   0 251,7M  1 loop /snap/firefox/7766
+loop12        7:12   0 254,9M  1 loop /snap/firefox/7967
+loop13        7:13   0  16,4M  1 loop /snap/firmware-updater/216
+loop14        7:14   0  16,4M  1 loop /snap/firmware-updater/224
+loop15        7:15   0 164,8M  1 loop /snap/gnome-3-28-1804/198
+loop16        7:16   0 531,4M  1 loop /snap/gnome-42-2204/247
+loop17        7:17   0 606,1M  1 loop /snap/gnome-46-2404/153
+loop18        7:18   0  91,7M  1 loop /snap/gtk-common-themes/1535
+loop19        7:19   0   395M  1 loop /snap/mesa-2404/1165
+loop20        7:20   0  10,8M  1 loop /snap/snap-store/1270
+loop21        7:21   0  48,1M  1 loop /snap/snapd/25935
+loop22        7:22   0  15,6M  1 loop /snap/snap-store/1338
+loop23        7:23   0  48,4M  1 loop /snap/snapd/26382
+loop24        7:24   0   576K  1 loop /snap/snapd-desktop-integration/343
+loop25        7:25   0   580K  1 loop /snap/snapd-desktop-integration/361
+loop26        7:26   0 161,2M  1 loop /snap/spotify/92
+loop27        7:27   0 162,5M  1 loop /snap/spotify/93
+loop28        7:28   0 227,1M  1 loop /snap/thunderbird/1029
+loop29        7:29   0 227,1M  1 loop /snap/thunderbird/1040
 sda           8:0    0   1,8T  0 disk 
 ├─sda1        8:1    0    16M  0 part 
 └─sda2        8:2    0   1,8T  0 part 
 nvme0n1     259:0    0 476,9G  0 disk 
 ├─nvme0n1p1 259:1    0   100M  0 part /boot/efi
 ├─nvme0n1p2 259:2    0    16M  0 part 
-├─nvme0n1p3 259:3    0 403,1G  0 part 
-├─nvme0n1p4 259:4    0   2,1G  0 part 
-├─nvme0n1p5 259:5    0   754M  0 part 
+├─nvme0n1p3 259:3    0 402,2G  0 part 
+├─nvme0n1p4 259:4    0   883M  0 part 
+├─nvme0n1p5 259:5    0   2,1G  0 part 
 └─nvme0n1p6 259:6    0  70,9G  0 part /
 
 ==== governors ====
-/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu10/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu11/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu12/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu13/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu14/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu15/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu1/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu2/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu3/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu4/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu5/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu6/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu7/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu8/cpufreq/scaling_governor:powersave
-/sys/devices/system/cpu/cpu9/cpufreq/scaling_governor:powersave
+/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu10/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu11/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu12/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu13/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu14/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu15/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu1/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu2/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu3/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu4/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu5/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu6/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu7/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu8/cpufreq/scaling_governor:performance
+/sys/devices/system/cpu/cpu9/cpufreq/scaling_governor:performance
 
 ==== /proc/cmdline ====
-BOOT_IMAGE=/boot/vmlinuz-6.17.0-19-generic root=UUID=492856d2-fb72-47d3-858c-28c5844676c5 ro quiet splash vt.handoff=7
+BOOT_IMAGE=/boot/vmlinuz-6.17.0-20-generic root=UUID=492856d2-fb72-47d3-858c-28c5844676c5 ro quiet splash vt.handoff=7
 
 ==== env ====
 COLORTERM=truecolor
@@ -148,9 +149,6 @@ LS_COLORS=rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd
 MAIL=/var/mail/root
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
 PWD=/home/jagarcia/Escritorio/TFM-Repo
-RANDOMIZE_ORDER=1
-SETTLE_SECONDS_AFTER=30
-SETTLE_SECONDS_BEFORE=30
 SHELL=/bin/bash
 SHLVL=1
 SUDO_COMMAND=./run.sh
@@ -160,5 +158,5 @@ SUDO_USER=jagarcia
 TERM=xterm-256color
 USER=root
 _=/usr/bin/env
-XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UQ1ON3
+XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.OUHDO3
 XDG_CURRENT_DESKTOP=ubuntu:GNOME

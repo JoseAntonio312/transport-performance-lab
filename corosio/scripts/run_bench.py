@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 
-import subprocess
-import time
-import json
-import os
-import socket
-import math
 import csv
+import json
+import math
+import os
+import signal
+import socket
 import statistics
+import subprocess
+import sys
+import time
+import textwrap
 from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
+
+# =========================
 # PATHS
+# =========================
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 ROOT_DIR = PROJECT_DIR.parent
@@ -23,52 +29,118 @@ IDLE_BASELINE_JSON = ROOT_DIR / "idle_baseline.json"
 USE_IDLE_BASELINE = True
 DEFAULT_IDLE_POWER_W = 0.0
 
-# CONFIG
+# =========================
+# OUTPUT / NOISE CONTROL
+# =========================
+QUIET = False
+PRINT_FINAL_SUMMARY = False
+GENERATE_PLOTS = True
+GENERATE_PDF = True
+GENERATE_COMPARISON_PDF = True
+
+# =========================
+# BENCHMARK CONFIG
+# =========================
 BUILD_DIRS = {
     "gcc": "./build-gcc",
     "clang": "./build-clang",
 }
 
 PORTS = {
-    "gcc": 8090,
-    "clang": 8091,
+    "gcc": 8120,
+    "clang": 8121,
 }
 
 COMPILERS = ["gcc", "clang"]
 
-FILE_TO_SERVE = ".././files/1GB.bin"
+FILE_TO_SERVE = "../files/100MB.bin"
 HOST = "127.0.0.1"
 
 ENERGY_PATH = "/sys/class/powercap/intel-rapl:0/energy_uj"
 MAX_ENERGY_PATH = "/sys/class/powercap/intel-rapl:0/max_energy_range_uj"
 
-RESULTS_DIR = "./results"
+RESULTS_DIR = Path("./results")
+RAW_DIR = RESULTS_DIR / "raw"
+PLOTS_DIR = RESULTS_DIR / "plots"
+REPORTS_DIR = RESULTS_DIR / "reports"
+LOGS_DIR = RESULTS_DIR / "logs"
 
-MACRO_BENCH_CASES = [1, 2, 4, 8, 16, 32, 64]
+MACRO_BENCH_CASES = [1, 2, 4, 8, 16]
 SERVER_THREADS = [1, 2, 4, 8]
-MACRO_REPETITIONS = 27
+MACRO_REPETITIONS = 25
 
 BENCH_ARGS = [
     "--benchmark_out_format=json"
 ]
 
-FINAL_RESULTS = os.path.join(RESULTS_DIR, "macro_bench_results.json")
-SUMMARY_RESULTS = os.path.join(RESULTS_DIR, "macro_bench_summary.json")
-CSV_RESULTS = os.path.join(RESULTS_DIR, "macro_bench_results.csv")
-PDF_RESULTS = os.path.join(RESULTS_DIR, "macro_bench_report.pdf")
+FINAL_RESULTS = RAW_DIR / "macro_bench_results.json"
+SUMMARY_RESULTS = RAW_DIR / "macro_bench_summary.json"
+CSV_RESULTS = RAW_DIR / "macro_bench_results.csv"
+
+MAIN_PDF_WITH_RAW = REPORTS_DIR / "macro_bench_report_with_raw.pdf"
+MAIN_PDF_NO_RAW = REPORTS_DIR / "macro_bench_report_no_raw.pdf"
+COMPARISON_PDF_WITH_RAW = REPORTS_DIR / "macro_bench_comparison_report_with_raw.pdf"
+COMPARISON_PDF_NO_RAW = REPORTS_DIR / "macro_bench_comparison_report_no_raw.pdf"
+
+# Backward-compatible aliases
+PDF_RESULTS = MAIN_PDF_WITH_RAW
+COMPARISON_PDF_RESULTS = COMPARISON_PDF_WITH_RAW
+
+# =========================
+# CASE-LEVEL SETTLE / CACHE CONTROL
+# =========================
+CASE_CACHE_TRASH_ENABLED = True
+CASE_CACHE_TRASH_SIZE_MB = 1024
+CASE_DROP_CACHES = True
+CASE_COOLDOWN_SECONDS = 20
+
+# =========================
+# SERVER PROCESS 
+# =========================
+SERVER_WAIT_TIMEOUT_SECONDS = 60.0
+SERVER_STOP_TIMEOUT_SECONDS = 5.0
+PORT_RETRY_SPAN = 200
+
+# =========================
+# PDF / TABLE TUNING
+# =========================
+TABLE_WRAP_MAIN = 20
+TABLE_WRAP_COMPARISON = 18
+TABLE_WRAP_RAW = 14
+TABLE_FONT_SIZE = 8
+TABLE_HEADER_FONT_SIZE = 9
+TABLE_VERTICAL_SCALE = 3.0
+TABLE_COMPARISON_VERTICAL_SCALE = 3.3
+TABLE_RAW_VERTICAL_SCALE = 1.9
+
+
+# =========================
+# BASIC UTILITIES
+# =========================
+def log(msg):
+    if not QUIET:
+        print(msg, flush=True)
+
 
 
 def ensure_results_dir():
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    os.chmod(RESULTS_DIR, 0o777)
+    for directory in [RESULTS_DIR, RAW_DIR, PLOTS_DIR, REPORTS_DIR, LOGS_DIR]:
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(directory, 0o777)
 
 
+# =========================
+# IDLE BASELINE
+# =========================
 def load_idle_power_w():
     if not USE_IDLE_BASELINE:
         return DEFAULT_IDLE_POWER_W
 
     if not IDLE_BASELINE_JSON.exists():
-        print(f"WARNING: no existe {IDLE_BASELINE_JSON}, usando DEFAULT_IDLE_POWER_W={DEFAULT_IDLE_POWER_W}")
+        log(
+            f"WARNING: {IDLE_BASELINE_JSON} does not exist, "
+            f"using DEFAULT_IDLE_POWER_W={DEFAULT_IDLE_POWER_W}"
+        )
         return DEFAULT_IDLE_POWER_W
 
     try:
@@ -76,26 +148,31 @@ def load_idle_power_w():
             data = json.load(f)
 
         value = float(data.get("watts_mean", DEFAULT_IDLE_POWER_W))
-        print(f"Using idle baseline from {IDLE_BASELINE_JSON}: {value:.6f} W")
+        log(f"Using idle baseline from {IDLE_BASELINE_JSON}: {value:.6f} W")
         return value
 
     except Exception as e:
-        print(f"WARNING: error leyendo {IDLE_BASELINE_JSON}: {e}")
-        print(f"Using DEFAULT_IDLE_POWER_W={DEFAULT_IDLE_POWER_W}")
+        log(f"WARNING: error reading {IDLE_BASELINE_JSON}: {e}")
+        log(f"Using DEFAULT_IDLE_POWER_W={DEFAULT_IDLE_POWER_W}")
         return DEFAULT_IDLE_POWER_W
 
 
 IDLE_POWER_W = load_idle_power_w()
 
 
+# =========================
+# ENERGY
+# =========================
 def read_energy():
     with open(ENERGY_PATH) as f:
         return int(f.read().strip())
 
 
+
 def read_max_energy():
     with open(MAX_ENERGY_PATH) as f:
         return int(f.read().strip())
+
 
 
 def energy_delta_j(e1, e2):
@@ -108,80 +185,53 @@ def energy_delta_j(e1, e2):
     return delta_uj / 1_000_000.0
 
 
+# =========================
+# PATH HELPERS
+# =========================
 def get_file_size():
     return os.path.getsize(FILE_TO_SERVE)
+
 
 
 def get_server_bin(compiler):
     return os.path.join(BUILD_DIRS[compiler], "tcpserver", "tcpserver")
 
 
+
 def get_bench_bin(compiler):
     return os.path.join(BUILD_DIRS[compiler], "benchmarks", "bench_tcp")
 
 
+
 def get_server_log_paths(compiler, server_threads):
-    stdout_path = os.path.join(
-        RESULTS_DIR,
-        f"server_{compiler}_threads_{server_threads}_stdout.log"
-    )
-    stderr_path = os.path.join(
-        RESULTS_DIR,
-        f"server_{compiler}_threads_{server_threads}_stderr.log"
-    )
+    stdout_path = LOGS_DIR / f"server_{compiler}_threads_{server_threads}_stdout.log"
+    stderr_path = LOGS_DIR / f"server_{compiler}_threads_{server_threads}_stderr.log"
     return stdout_path, stderr_path
+
+
+
+def get_bench_stderr_log_path(compiler, server_threads, case_clients, repetition, index):
+    return LOGS_DIR / (
+        f"bench_{compiler}_threads_{server_threads}_{case_clients}_{repetition}_{index}.stderr.log"
+    )
+
+
+
+def get_micro_json_path(compiler, server_threads, case_clients, repetition, index):
+    return RAW_DIR / (
+        f"micro_{compiler}_threads_{server_threads}_{case_clients}_{repetition}_{index}.json"
+    )
+
 
 
 def get_port(compiler):
     return PORTS[compiler]
 
 
-def is_port_open(host, port, timeout=0.5):
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
 
+def set_port(compiler, port):
+    PORTS[compiler] = port
 
-def start_server(compiler, server_threads):
-    server_bin = get_server_bin(compiler)
-    port = get_port(compiler)
-
-    if not os.path.exists(server_bin):
-        raise FileNotFoundError(f"No existe el binario del servidor para {compiler}: {server_bin}")
-
-    stdout_path, stderr_path = get_server_log_paths(compiler, server_threads)
-
-    stdout_file = open(stdout_path, "w")
-    stderr_file = open(stderr_path, "w")
-
-    proc = subprocess.Popen(
-        [server_bin, FILE_TO_SERVE, str(port), str(server_threads)],
-        stdout=stdout_file,
-        stderr=stderr_file,
-        text=True
-    )
-
-    return proc, stdout_file, stderr_file
-
-
-def stop_server(proc, stdout_file=None, stderr_file=None):
-    if proc is not None and proc.poll() is None:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
-
-    if stdout_file is not None and not stdout_file.closed:
-        stdout_file.close()
-
-    if stderr_file is not None and not stderr_file.closed:
-        stderr_file.close()
-
-    time.sleep(1.0)
 
 
 def read_text_file(path):
@@ -192,7 +242,172 @@ def read_text_file(path):
         return ""
 
 
-def wait_for_server(proc, host, port, compiler, server_threads, timeout=60.0):
+# =========================
+# PORT MANAGEMENT
+# =========================
+def is_port_open(host, port, timeout=0.5):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+
+def can_bind_port(host, port):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+
+def find_free_port(start_port, host=HOST, span=PORT_RETRY_SPAN):
+    for port in range(start_port, start_port + span):
+        if can_bind_port(host, port):
+            return port
+    raise RuntimeError(
+        f"Could not find a free port in range [{start_port}, {start_port + span - 1}]"
+    )
+
+
+
+def _run_optional_command(cmd):
+    try:
+        subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+
+def kill_processes_on_port(port):
+    _run_optional_command(["fuser", "-k", "-TERM", f"{port}/tcp"])
+    time.sleep(0.5)
+
+    if can_bind_port(HOST, port):
+        return
+
+    _run_optional_command(["fuser", "-k", "-KILL", f"{port}/tcp"])
+    time.sleep(0.5)
+
+    if can_bind_port(HOST, port):
+        return
+
+    try:
+        res = subprocess.run(
+            ["lsof", "-ti", f"tcp:{port}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        pids = [x.strip() for x in res.stdout.splitlines() if x.strip()]
+        for pid in pids:
+            _run_optional_command(["kill", "-TERM", pid])
+        if pids:
+            time.sleep(0.5)
+        if not can_bind_port(HOST, port):
+            for pid in pids:
+                _run_optional_command(["kill", "-KILL", pid])
+            if pids:
+                time.sleep(0.5)
+    except Exception:
+        pass
+
+
+
+def prepare_server_port(compiler):
+    preferred = get_port(compiler)
+    kill_processes_on_port(preferred)
+
+    if can_bind_port(HOST, preferred):
+        return preferred
+
+    new_port = find_free_port(preferred + 1)
+    log(f"Port {preferred} is still busy, switching {compiler} to port {new_port}")
+    set_port(compiler, new_port)
+    return new_port
+
+
+# =========================
+# SERVER LIFECYCLE
+# =========================
+def start_server(compiler, server_threads):
+    server_bin = get_server_bin(compiler)
+    port = prepare_server_port(compiler)
+
+    if not os.path.exists(server_bin):
+        raise FileNotFoundError(f"Server binary not found for {compiler}: {server_bin}")
+
+    stdout_path, stderr_path = get_server_log_paths(compiler, server_threads)
+
+    stdout_file = open(stdout_path, "w")
+    stderr_file = open(stderr_path, "w")
+
+    proc = subprocess.Popen(
+        [server_bin, FILE_TO_SERVE, str(port), str(server_threads)],
+        stdout=stdout_file,
+        stderr=stderr_file,
+        text=True,
+        preexec_fn=os.setsid,
+    )
+
+    return proc, stdout_file, stderr_file, port
+
+
+
+def stop_server(proc, stdout_file=None, stderr_file=None, port=None):
+    try:
+        if proc is not None and proc.poll() is None:
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+            try:
+                proc.wait(timeout=SERVER_STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
+                try:
+                    proc.wait(timeout=SERVER_STOP_TIMEOUT_SECONDS)
+                except Exception:
+                    pass
+    finally:
+        if stdout_file is not None and not stdout_file.closed:
+            stdout_file.close()
+
+        if stderr_file is not None and not stderr_file.closed:
+            stderr_file.close()
+
+        if port is not None:
+            kill_processes_on_port(port)
+
+        time.sleep(1.0)
+
+
+
+def wait_for_server(proc, host, port, compiler, server_threads, timeout=SERVER_WAIT_TIMEOUT_SECONDS):
     start = time.perf_counter()
 
     while (time.perf_counter() - start) < timeout:
@@ -202,8 +417,8 @@ def wait_for_server(proc, host, port, compiler, server_threads, timeout=60.0):
             stderr_text = read_text_file(stderr_path)
 
             raise RuntimeError(
-                f"El servidor para {compiler} con {server_threads} hebras terminó antes de estar listo.\n"
-                f"Puerto: {port}\n"
+                f"The server for {compiler} with {server_threads} threads exited before becoming ready.\n"
+                f"Port: {port}\n"
                 f"stdout log: {stdout_path}\n"
                 f"stderr log: {stderr_path}\n"
                 f"--- STDOUT ---\n{stdout_text}\n"
@@ -220,8 +435,8 @@ def wait_for_server(proc, host, port, compiler, server_threads, timeout=60.0):
     stderr_text = read_text_file(stderr_path)
 
     raise RuntimeError(
-        f"El servidor para {compiler} con {server_threads} hebras no quedó listo a tiempo.\n"
-        f"Puerto: {port}\n"
+        f"The server for {compiler} with {server_threads} threads did not become ready in time.\n"
+        f"Port: {port}\n"
         f"stdout log: {stdout_path}\n"
         f"stderr log: {stderr_path}\n"
         f"--- STDOUT ---\n{stdout_text}\n"
@@ -229,25 +444,69 @@ def wait_for_server(proc, host, port, compiler, server_threads, timeout=60.0):
     )
 
 
-def start_bench_instance(compiler, server_threads, case_clients, repetition, index):
+# =========================
+# CASE-LEVEL COOLING / CACHE
+# =========================
+def case_level_cache_trash():
+    if not CASE_CACHE_TRASH_ENABLED:
+        return
+
+    log(f"Case-level cache trashing best-effort ({CASE_CACHE_TRASH_SIZE_MB} MB)...")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "size_mb = int(__import__('os').environ['CASE_CACHE_MB']);"
+                "chunk = 1024 * 1024;"
+                "buf = bytearray(chunk);"
+                "acc = 0;"
+                "for i in range(size_mb):\n"
+                "    for j in range(0, len(buf), 4096):\n"
+                "        buf[j] = (i + j) & 0xFF;"
+                "        acc ^= buf[j];"
+                "print(acc)"
+            )
+        ],
+        env={**os.environ, "CASE_CACHE_MB": str(CASE_CACHE_TRASH_SIZE_MB)},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+    if CASE_DROP_CACHES and os.access("/proc/sys/vm/drop_caches", os.W_OK):
+        log("Dropping page cache (case-level best-effort)")
+        subprocess.run(["sync"], check=False)
+        try:
+            with open("/proc/sys/vm/drop_caches", "w") as f:
+                f.write("3\n")
+        except Exception:
+            pass
+
+
+
+def settle_between_cases():
+    if CASE_COOLDOWN_SECONDS <= 0:
+        return
+    log(f"Cooling down between cases for {CASE_COOLDOWN_SECONDS} seconds...")
+    time.sleep(CASE_COOLDOWN_SECONDS)
+
+
+# =========================
+# BENCH EXECUTION
+# =========================
+def start_bench_instance(compiler, server_threads, case_clients, repetition, index, port):
     bench_bin = get_bench_bin(compiler)
-    port = get_port(compiler)
 
     if not os.path.exists(bench_bin):
-        raise FileNotFoundError(f"No existe el binario del benchmark para {compiler}: {bench_bin}")
+        raise FileNotFoundError(f"Benchmark binary not found for {compiler}: {bench_bin}")
 
-    output_json = os.path.join(
-        RESULTS_DIR,
-        f"micro_{compiler}_threads_{server_threads}_{case_clients}_{repetition}_{index}.json"
-    )
+    output_json = get_micro_json_path(compiler, server_threads, case_clients, repetition, index)
+    stderr_log = get_bench_stderr_log_path(compiler, server_threads, case_clients, repetition, index)
 
-    stderr_log = os.path.join(
-        RESULTS_DIR,
-        f"bench_{compiler}_threads_{server_threads}_{case_clients}_{repetition}_{index}.stderr.log"
-    )
-
-    if os.path.exists(output_json):
-        os.remove(output_json)
+    if output_json.exists():
+        output_json.unlink()
 
     cmd = (
         [bench_bin]
@@ -261,10 +520,44 @@ def start_bench_instance(compiler, server_threads, case_clients, repetition, ind
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
-        stderr=err_file
+        stderr=err_file,
+        preexec_fn=os.setsid,
     )
 
     return proc, output_json, err_file
+
+
+
+def stop_bench_process(proc):
+    try:
+        if proc is not None and proc.poll() is None:
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                try:
+                    proc.wait(timeout=3)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 
 
 def parse_benchmark_json(path):
@@ -290,27 +583,38 @@ def parse_benchmark_json(path):
         return False, 0
 
 
-def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file_size_bytes):
+
+def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file_size_bytes, port):
     processes = []
     outputs = []
 
     e1 = read_energy()
     t1 = time.perf_counter()
 
-    for i in range(num_benches):
-        proc, out_json, err_file = start_bench_instance(
-            compiler,
-            server_threads,
-            num_benches,
-            repetition,
-            i
-        )
-        processes.append((proc, out_json, err_file))
-        outputs.append(out_json)
+    try:
+        for i in range(num_benches):
+            proc, out_json, err_file = start_bench_instance(
+                compiler,
+                server_threads,
+                num_benches,
+                repetition,
+                i,
+                port,
+            )
+            processes.append((proc, out_json, err_file))
+            outputs.append(out_json)
 
-    for proc, _, err_file in processes:
-        proc.wait()
-        err_file.close()
+        for proc, _, err_file in processes:
+            proc.wait()
+            err_file.close()
+    except KeyboardInterrupt:
+        for proc, _, err_file in processes:
+            stop_bench_process(proc)
+            try:
+                err_file.close()
+            except Exception:
+                pass
+        raise
 
     t2 = time.perf_counter()
     e2 = read_energy()
@@ -330,7 +634,7 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
             valid, iters = parse_benchmark_json(path)
             if valid:
                 total_iterations += iters
-                valid_json_files.append(path)
+                valid_json_files.append(str(path))
                 success += 1
             else:
                 failed += 1
@@ -346,7 +650,7 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
 
     return {
         "compiler": compiler,
-        "port": get_port(compiler),
+        "port": port,
         "server_threads": server_threads,
         "parallel_bench_processes": num_benches,
         "repetition": repetition,
@@ -365,38 +669,46 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
     }
 
 
+
 def run_campaign_for_compiler_and_threads(compiler, server_threads):
     file_size_bytes = get_file_size()
     results = []
-    port = get_port(compiler)
 
-    print(f"Starting server for {compiler} on port {port} with {server_threads} threads...")
-    server, server_stdout, server_stderr = start_server(compiler, server_threads)
+    log(f"Starting server for {compiler} on port {get_port(compiler)} with {server_threads} threads...")
+    server, server_stdout, server_stderr, actual_port = start_server(compiler, server_threads)
 
-    wait_for_server(server, HOST, port, compiler, server_threads)
+    wait_for_server(server, HOST, actual_port, compiler, server_threads)
 
     try:
-        print(f"Running benchmark campaign for {compiler} with {server_threads} server threads...")
+        log(f"Running benchmark campaign for {compiler} with {server_threads} server threads...")
+
         for benches in MACRO_BENCH_CASES:
+            case_level_cache_trash()
+            settle_between_cases()
+
             for rep in range(MACRO_REPETITIONS):
-                print(
+                log(
                     f"[{compiler}][server_threads={server_threads}] "
-                    f"Running {benches} parallel bench_tcp on port {port}..."
+                    f"Running {benches} parallel benchmark process(es) on port {actual_port}..."
                 )
                 result = run_macro_bench_case(
                     compiler,
                     server_threads,
                     benches,
                     rep,
-                    file_size_bytes
+                    file_size_bytes,
+                    actual_port,
                 )
                 results.append(result)
     finally:
-        stop_server(server, server_stdout, server_stderr)
+        stop_server(server, server_stdout, server_stderr, actual_port)
 
     return results
 
 
+# =========================
+# STATISTICS
+# =========================
 def percentile(sorted_values, p):
     if not sorted_values:
         return None
@@ -413,6 +725,7 @@ def percentile(sorted_values, p):
     d0 = sorted_values[f] * (c - k)
     d1 = sorted_values[c] * (k - f)
     return d0 + d1
+
 
 
 def compute_stats(values):
@@ -432,6 +745,7 @@ def compute_stats(values):
         "p50": percentile(sorted_values, 50),
         "p95": percentile(sorted_values, 95),
     }
+
 
 
 def summarize_results(results):
@@ -477,6 +791,9 @@ def summarize_results(results):
     return summary
 
 
+# =========================
+# CSV / TABLE FORMATTING
+# =========================
 def write_csv(results):
     fieldnames = [
         "compiler",
@@ -505,76 +822,6 @@ def write_csv(results):
             writer.writerow({k: row.get(k) for k in fieldnames})
 
 
-def make_plot_for_metric(results, compiler, metric_key, metric_label, output_name):
-    plt.figure(figsize=(10, 6))
-
-    for server_threads in SERVER_THREADS:
-        rows = [
-            r for r in results
-            if r["compiler"] == compiler and r["server_threads"] == server_threads
-        ]
-
-        rows.sort(key=lambda x: x["parallel_bench_processes"])
-
-        x = [r["parallel_bench_processes"] for r in rows]
-        y = [r[metric_key] for r in rows]
-
-        if x and y:
-            plt.plot(x, y, marker="o", label=f"{server_threads} hebras servidor")
-
-    plt.xlabel("Procesos bench_tcp en paralelo")
-    plt.ylabel(metric_label)
-    plt.title(f"{metric_label} - {compiler}")
-    plt.xticks(MACRO_BENCH_CASES)
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(RESULTS_DIR, output_name))
-    plt.close()
-
-
-def generate_plots(results):
-    for compiler in COMPILERS:
-        make_plot_for_metric(
-            results,
-            compiler,
-            "elapsed_s",
-            "Tiempo total de campaña (s)",
-            f"plot_elapsed_{compiler}.png"
-        )
-
-        make_plot_for_metric(
-            results,
-            compiler,
-            "energy_j_raw",
-            "Energía bruta (J)",
-            f"plot_energy_raw_{compiler}.png"
-        )
-
-        make_plot_for_metric(
-            results,
-            compiler,
-            "energy_j",
-            "Energía neta (J)",
-            f"plot_energy_net_{compiler}.png"
-        )
-
-        make_plot_for_metric(
-            results,
-            compiler,
-            "throughput_mib_s",
-            "Throughput agregado (MiB/s)",
-            f"plot_throughput_{compiler}.png"
-        )
-
-        make_plot_for_metric(
-            results,
-            compiler,
-            "downloads_per_process",
-            "Descargas por proceso",
-            f"plot_downloads_per_process_{compiler}.png"
-        )
-
 
 def fmt(v, decimals=6):
     if v is None:
@@ -584,22 +831,194 @@ def fmt(v, decimals=6):
     return f"{v:.{decimals}f}"
 
 
-def stats_to_multiline(stats):
+
+def wrap_text(text, width):
+    if text is None:
+        return "-"
+    if not isinstance(text, str):
+        text = str(text)
+    parts = []
+    for line in text.splitlines():
+        wrapped = textwrap.wrap(line, width=width, break_long_words=False, replace_whitespace=False)
+        if wrapped:
+            parts.extend(wrapped)
+        else:
+            parts.append("")
+    return "\n".join(parts)
+
+
+
+def short_stats_cell(stats, wrap_width=TABLE_WRAP_MAIN):
     if not stats:
         return "-"
-    return (
-        f"n={stats['count']}\n"
-        f"mean={fmt(stats['mean'])}\n"
-        f"median={fmt(stats['median'])}\n"
-        f"stdev={fmt(stats['stdev'])}\n"
-        f"p25={fmt(stats['p25'])}\n"
-        f"p50={fmt(stats['p50'])}\n"
-        f"p95={fmt(stats['p95'])}\n"
-        f"min={fmt(stats['min'])}\n"
-        f"max={fmt(stats['max'])}"
+    return wrap_text(
+        (
+            f"Mean: {fmt(stats['mean'], 4)}\n"
+            f"Median: {fmt(stats['median'], 4)}\n"
+            f"P95: {fmt(stats['p95'], 4)}\n"
+            f"Min: {fmt(stats['min'], 4)}\n"
+            f"Max: {fmt(stats['max'], 4)}"
+        ),
+        wrap_width,
     )
 
 
+
+def stats_summary_line(stats, unit=""):
+    if not stats:
+        return "-"
+    suffix = f" {unit}" if unit else ""
+    return (
+        f"Mean {fmt(stats['mean'], 4)}{suffix}; "
+        f"Median {fmt(stats['median'], 4)}{suffix}; "
+        f"P95 {fmt(stats['p95'], 4)}{suffix}; "
+        f"Min {fmt(stats['min'], 4)}{suffix}; "
+        f"Max {fmt(stats['max'], 4)}{suffix}"
+    )
+
+
+# =========================
+# PLOTS
+# =========================
+def make_per_run_scatter_with_mean(results, compiler, metric_key, metric_label, output_name):
+    plt.figure(figsize=(11, 7))
+
+    for server_threads in SERVER_THREADS:
+        rows = [
+            r for r in results
+            if r["compiler"] == compiler and r["server_threads"] == server_threads
+        ]
+        rows.sort(key=lambda x: (x["parallel_bench_processes"], x["repetition"]))
+
+        if not rows:
+            continue
+
+        x_all = [r["parallel_bench_processes"] for r in rows]
+        y_all = [r[metric_key] for r in rows]
+        plt.scatter(x_all, y_all, alpha=0.55, s=28, label=f"{server_threads} server thread(s) - runs")
+
+        mean_rows = []
+        for bench_count in MACRO_BENCH_CASES:
+            selected = [r[metric_key] for r in rows if r["parallel_bench_processes"] == bench_count]
+            if selected:
+                mean_rows.append((bench_count, statistics.mean(selected)))
+
+        if mean_rows:
+            x_mean = [x for x, _ in mean_rows]
+            y_mean = [y for _, y in mean_rows]
+            plt.plot(x_mean, y_mean, marker="o", linewidth=2.2, label=f"{server_threads} server thread(s) - mean")
+
+    plt.xlabel("Number of parallel benchmark client processes")
+    plt.ylabel(metric_label)
+    plt.title(f"{metric_label} for {compiler.upper()} builds")
+    plt.xticks(MACRO_BENCH_CASES)
+    plt.grid(True, alpha=0.35)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(PLOTS_DIR / output_name)
+    plt.close()
+
+
+
+def make_compiler_comparison_plot(summary, server_threads, metric_stats_key, metric_label, output_name):
+    plt.figure(figsize=(11, 7))
+
+    for compiler in COMPILERS:
+        rows = [
+            r for r in summary
+            if r["compiler"] == compiler and r["server_threads"] == server_threads
+        ]
+        rows.sort(key=lambda x: x["parallel_bench_processes"])
+
+        x = [r["parallel_bench_processes"] for r in rows if r.get(metric_stats_key)]
+        y = [r[metric_stats_key]["mean"] for r in rows if r.get(metric_stats_key)]
+
+        if x and y:
+            plt.plot(x, y, marker="o", linewidth=2.2, label=f"{compiler.upper()} - {server_threads} server thread(s)")
+
+    plt.xlabel("Number of parallel benchmark client processes")
+    plt.ylabel(metric_label)
+    plt.title(f"{metric_label}: GCC vs Clang with {server_threads} server thread(s)")
+    plt.xticks(MACRO_BENCH_CASES)
+    plt.grid(True, alpha=0.35)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(PLOTS_DIR / output_name)
+    plt.close()
+
+
+
+def generate_plots(results, summary):
+    for compiler in COMPILERS:
+        make_per_run_scatter_with_mean(
+            results,
+            compiler,
+            "elapsed_s",
+            "Total execution time (seconds)",
+            f"elapsed_time_{compiler}.png"
+        )
+
+        make_per_run_scatter_with_mean(
+            results,
+            compiler,
+            "energy_j_raw",
+            "Raw energy consumption (joules)",
+            f"raw_energy_{compiler}.png"
+        )
+
+        make_per_run_scatter_with_mean(
+            results,
+            compiler,
+            "energy_j",
+            "Net energy consumption (joules)",
+            f"net_energy_{compiler}.png"
+        )
+
+        make_per_run_scatter_with_mean(
+            results,
+            compiler,
+            "throughput_mib_s",
+            "Aggregate throughput (MiB/s)",
+            f"throughput_{compiler}.png"
+        )
+
+        make_per_run_scatter_with_mean(
+            results,
+            compiler,
+            "downloads_per_process",
+            "Completed downloads per benchmark process",
+            f"downloads_per_process_{compiler}.png"
+        )
+
+    for server_threads in SERVER_THREADS:
+        make_compiler_comparison_plot(
+            summary,
+            server_threads,
+            "elapsed_s_stats",
+            "Mean total execution time (seconds)",
+            f"comparison_elapsed_threads_{server_threads}.png"
+        )
+
+        make_compiler_comparison_plot(
+            summary,
+            server_threads,
+            "energy_j_stats",
+            "Mean net energy consumption (joules)",
+            f"comparison_net_energy_threads_{server_threads}.png"
+        )
+
+        make_compiler_comparison_plot(
+            summary,
+            server_threads,
+            "throughput_mib_s_stats",
+            "Mean aggregate throughput (MiB/s)",
+            f"comparison_throughput_threads_{server_threads}.png"
+        )
+
+
+# =========================
+# PDF HELPERS
+# =========================
 def add_text_page(pdf, title, lines, fontsize=11):
     fig = plt.figure(figsize=(8.27, 11.69))
     fig.clf()
@@ -624,60 +1043,101 @@ def add_text_page(pdf, title, lines, fontsize=11):
     plt.close(fig)
 
 
-def add_table_page(pdf, title, columns, rows, fontsize=8):
-    fig, ax = plt.subplots(figsize=(11.69, 8.27))
+
+def add_table_page(
+    pdf,
+    title,
+    columns,
+    rows,
+    fontsize=TABLE_FONT_SIZE,
+    scale_y=TABLE_VERTICAL_SCALE,
+    col_widths=None
+):
+    fig, ax = plt.subplots(figsize=(25, 14.4))
     ax.axis("off")
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=16)
+    ax.set_title(title, fontsize=16, fontweight="bold", pad=18)
 
     table = ax.table(
         cellText=rows,
         colLabels=columns,
         loc="center",
-        cellLoc="center"
+        cellLoc="left",
+        colLoc="center",
+        colWidths=col_widths,
     )
 
     table.auto_set_font_size(False)
     table.set_fontsize(fontsize)
-    table.scale(1, 1.5)
+    table.scale(1, scale_y)
+
+    for (row, col), cell in table.get_celld().items():
+        cell.set_linewidth(0.8)
+        cell.get_text().set_wrap(True)
+
+        if row == 0:
+            cell.set_text_props(
+                weight="bold",
+                fontsize=TABLE_HEADER_FONT_SIZE,
+                ha="center",
+                va="center",
+            )
+            cell.set_height(cell.get_height() * 1.35)
+        else:
+            cell.set_text_props(va="center", ha="left")
+            cell.set_height(cell.get_height() * 1.10)
 
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
 
+
+def add_image_page(pdf, image_path, title):
+    fig = plt.figure(figsize=(8.27, 11.69))
+    plt.axis("off")
+    img = plt.imread(image_path)
+    plt.imshow(img)
+    plt.title(title, fontsize=14)
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+
+# =========================
+# TABLE BUILDERS
+# =========================
 def build_summary_table_rows(summary):
     rows = []
 
     for item in summary:
         rows.append([
-            item["compiler"],
+            item["compiler"].upper(),
             str(item["server_threads"]),
             str(item["parallel_bench_processes"]),
             str(item["runs"]),
-            stats_to_multiline(item["elapsed_s_stats"]),
-            stats_to_multiline(item["energy_j_raw_stats"]),
-            stats_to_multiline(item["idle_energy_j_estimated_stats"]),
-            stats_to_multiline(item["energy_j_stats"]),
-            stats_to_multiline(item["throughput_mib_s_stats"]),
+            short_stats_cell(item["elapsed_s_stats"], TABLE_WRAP_MAIN),
+            short_stats_cell(item["energy_j_stats"], TABLE_WRAP_MAIN),
+            short_stats_cell(item["throughput_mib_s_stats"], TABLE_WRAP_MAIN),
+            short_stats_cell(item["downloads_per_process_stats"], TABLE_WRAP_MAIN),
         ])
 
     return rows
 
 
-def build_aux_summary_table_rows(summary):
+
+def build_reliability_table_rows(summary):
     rows = []
 
     for item in summary:
         rows.append([
-            item["compiler"],
+            item["compiler"].upper(),
             str(item["server_threads"]),
             str(item["parallel_bench_processes"]),
-            stats_to_multiline(item["downloads_per_process_stats"]),
-            stats_to_multiline(item["total_iterations_stats"]),
-            stats_to_multiline(item["success_stats"]),
-            stats_to_multiline(item["failed_stats"]),
+            short_stats_cell(item["total_iterations_stats"], TABLE_WRAP_MAIN),
+            short_stats_cell(item["success_stats"], TABLE_WRAP_MAIN),
+            short_stats_cell(item["failed_stats"], TABLE_WRAP_MAIN),
         ])
 
     return rows
+
 
 
 def build_raw_results_rows(results):
@@ -685,171 +1145,268 @@ def build_raw_results_rows(results):
 
     for item in results:
         rows.append([
-            item["compiler"],
+            item["compiler"].upper(),
             str(item["server_threads"]),
             str(item["parallel_bench_processes"]),
             str(item["repetition"]),
+            fmt(item["elapsed_s"], 4),
+            fmt(item["energy_j_raw"], 4),
+            fmt(item["energy_j"], 4),
+            fmt(item["throughput_mib_s"], 4),
             str(item["success"]),
             str(item["failed"]),
-            str(item["total_iterations"]),
-            fmt(item["downloads_per_process"]),
-            fmt(item["elapsed_s"]),
-            fmt(item["energy_j_raw"]),
-            fmt(item["idle_energy_j_estimated"]),
-            fmt(item["energy_j"]),
-            fmt(item["throughput_mib_s"]),
         ])
 
     return rows
 
 
-def generate_pdf_report(final_data, summary, results):
-    with PdfPages(PDF_RESULTS) as pdf:
-        cover_lines = [
-            "Informe de benchmark macro",
-            f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            "",
-            f"Fichero servido: {final_data['file_served']}",
-            f"Host: {final_data['host']}",
-            f"Compiladores: {', '.join(final_data['compilers'])}",
-            f"Puertos: {final_data['ports']}",
-            f"Casos paralelos: {final_data['cases']}",
-            f"Hebras de servidor: {final_data['server_threads']}",
-            f"Repeticiones: {final_data['repetitions']}",
-            f"Idle power baseline: {IDLE_POWER_W:.6f} W",
-            "",
-            "Metricas incluidas:",
-            "- tiempo total",
-            "- energia bruta",
-            "- energia idle estimada",
-            "- energia neta",
-            "- throughput agregado",
-            "- descargas por proceso",
-            "- total iterations",
-            "- success / failed",
-            "",
-            "Estadisticas incluidas:",
-            "- count",
-            "- mean",
-            "- median",
-            "- stdev",
-            "- p25",
-            "- p50",
-            "- p95",
-            "- min",
-            "- max",
-        ]
-        add_text_page(pdf, "Informe PDF de benchmark", cover_lines, fontsize=11)
 
-        config_lines = [
-            "CONFIGURACION",
+def build_comparison_table_rows(summary, server_threads):
+    rows = []
+
+    for bench_count in MACRO_BENCH_CASES:
+        gcc_row = next(
+            (x for x in summary if x["compiler"] == "gcc" and x["server_threads"] == server_threads and x["parallel_bench_processes"] == bench_count),
+            None,
+        )
+        clang_row = next(
+            (x for x in summary if x["compiler"] == "clang" and x["server_threads"] == server_threads and x["parallel_bench_processes"] == bench_count),
+            None,
+        )
+
+        rows.append([
+            str(bench_count),
+            wrap_text(stats_summary_line(gcc_row["elapsed_s_stats"], "s") if gcc_row else "-", TABLE_WRAP_COMPARISON),
+            wrap_text(stats_summary_line(clang_row["elapsed_s_stats"], "s") if clang_row else "-", TABLE_WRAP_COMPARISON),
+            wrap_text(stats_summary_line(gcc_row["energy_j_stats"], "J") if gcc_row else "-", TABLE_WRAP_COMPARISON),
+            wrap_text(stats_summary_line(clang_row["energy_j_stats"], "J") if clang_row else "-", TABLE_WRAP_COMPARISON),
+            wrap_text(stats_summary_line(gcc_row["throughput_mib_s_stats"], "MiB/s") if gcc_row else "-", TABLE_WRAP_COMPARISON),
+            wrap_text(stats_summary_line(clang_row["throughput_mib_s_stats"], "MiB/s") if clang_row else "-", TABLE_WRAP_COMPARISON),
+        ])
+
+    return rows
+
+
+# =========================
+# PDF REPORTS
+# =========================
+def generate_main_pdf_report(final_data, summary, results, output_path, include_raw_results):
+    with PdfPages(output_path) as pdf:
+        cover_lines = [
+            "Main benchmark report",
+            f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             "",
-            f"BUILD_DIRS = {final_data['build_dirs']}",
-            f"PORTS = {final_data['ports']}",
-            f"COMPILERS = {final_data['compilers']}",
-            f"FILE_TO_SERVE = {final_data['file_served']}",
-            f"HOST = {final_data['host']}",
-            f"MACRO_BENCH_CASES = {final_data['cases']}",
-            f"SERVER_THREADS = {final_data['server_threads']}",
-            f"MACRO_REPETITIONS = {final_data['repetitions']}",
-            f"IDLE_BASELINE_JSON = {IDLE_BASELINE_JSON}",
-            f"IDLE_POWER_W = {IDLE_POWER_W:.6f}",
+            f"Served file: {final_data['file_served']}",
+            f"Host: {final_data['host']}",
+            f"Compilers: {', '.join(final_data['compilers']).upper()}",
+            f"Ports: {final_data['ports']}",
+            f"Parallel client cases: {final_data['cases']}",
+            f"Server thread counts: {final_data['server_threads']}",
+            f"Repetitions per case: {final_data['repetitions']}",
+            f"Idle power baseline: {IDLE_POWER_W:.6f} W",
+            f"Case cooldown: {CASE_COOLDOWN_SECONDS} seconds",
+            f"Raw results included: {'yes' if include_raw_results else 'no'}",
         ]
-        add_text_page(pdf, "Configuracion del experimento", config_lines, fontsize=10)
+        add_text_page(pdf, "Benchmark report", cover_lines, fontsize=11)
 
         summary_columns = [
-            "compiler",
-            "server_threads",
-            "parallel_bench_processes",
-            "runs",
-            "elapsed_s_stats",
-            "energy_j_raw_stats",
-            "idle_energy_j_estimated_stats",
-            "energy_j_net_stats",
-            "throughput_mib_s_stats",
+            "Compiler",
+            "Server\nthreads",
+            "Parallel\nbenchmark\nclients",
+            "Runs",
+            "Execution time\nsummary",
+            "Net energy\nsummary",
+            "Throughput\nsummary",
+            "Downloads per\nprocess summary",
         ]
         summary_rows = build_summary_table_rows(summary)
 
-        chunk_size = 5
+        chunk_size = 3
+        summary_col_widths = [0.08, 0.08, 0.09, 0.06, 0.17, 0.17, 0.17, 0.18]
         for i in range(0, len(summary_rows), chunk_size):
             add_table_page(
                 pdf,
-                f"Resumen estadistico (parte {i // chunk_size + 1})",
+                f"Summary table (part {i // chunk_size + 1})",
                 summary_columns,
                 summary_rows[i:i + chunk_size],
-                fontsize=7
+                fontsize=8,
+                scale_y=TABLE_VERTICAL_SCALE,
+                col_widths=summary_col_widths,
             )
 
-        aux_columns = [
-            "compiler",
-            "server_threads",
-            "parallel_bench_processes",
-            "downloads_per_process_stats",
-            "total_iterations_stats",
-            "success_stats",
-            "failed_stats",
+        reliability_columns = [
+            "Compiler",
+            "Server\nthreads",
+            "Parallel\nbenchmark\nclients",
+            "Total iterations\nsummary",
+            "Successful\nprocesses summary",
+            "Failed\nprocesses summary",
         ]
-        aux_rows = build_aux_summary_table_rows(summary)
-
-        for i in range(0, len(aux_rows), chunk_size):
+        reliability_rows = build_reliability_table_rows(summary)
+        reliability_col_widths = [0.10, 0.09, 0.10, 0.24, 0.23, 0.24]
+        for i in range(0, len(reliability_rows), chunk_size):
             add_table_page(
                 pdf,
-                f"Resumen auxiliar (parte {i // chunk_size + 1})",
-                aux_columns,
-                aux_rows[i:i + chunk_size],
-                fontsize=7
+                f"Reliability table (part {i // chunk_size + 1})",
+                reliability_columns,
+                reliability_rows[i:i + chunk_size],
+                fontsize=8,
+                scale_y=TABLE_VERTICAL_SCALE,
+                col_widths=reliability_col_widths,
             )
+
+        plot_titles = {
+            "elapsed_time": "Total execution time",
+            "raw_energy": "Raw energy consumption",
+            "net_energy": "Net energy consumption",
+            "throughput": "Aggregate throughput",
+            "downloads_per_process": "Completed downloads per benchmark process",
+        }
 
         for compiler in final_data["compilers"]:
-            plot_files = [
-                os.path.join(RESULTS_DIR, f"plot_elapsed_{compiler}.png"),
-                os.path.join(RESULTS_DIR, f"plot_energy_raw_{compiler}.png"),
-                os.path.join(RESULTS_DIR, f"plot_energy_net_{compiler}.png"),
-                os.path.join(RESULTS_DIR, f"plot_throughput_{compiler}.png"),
-                os.path.join(RESULTS_DIR, f"plot_downloads_per_process_{compiler}.png"),
+            compiler_lines = [
+                f"Compiler-focused report section for {compiler.upper()}.",
+                "",
             ]
+            compiler_rows = [x for x in summary if x["compiler"] == compiler]
+            for row in compiler_rows:
+                compiler_lines.append(
+                    f"Server threads = {row['server_threads']}, parallel clients = {row['parallel_bench_processes']}: "
+                    f"time -> {stats_summary_line(row['elapsed_s_stats'], 's')} | "
+                    f"net energy -> {stats_summary_line(row['energy_j_stats'], 'J')} | "
+                    f"throughput -> {stats_summary_line(row['throughput_mib_s_stats'], 'MiB/s')}"
+                )
+            add_text_page(pdf, f"{compiler.upper()} overview", compiler_lines, fontsize=9)
 
-            for plot_path in plot_files:
-                if os.path.exists(plot_path):
-                    fig = plt.figure(figsize=(8.27, 11.69))
-                    plt.axis("off")
-                    img = plt.imread(plot_path)
-                    plt.imshow(img)
-                    plt.title(os.path.basename(plot_path), fontsize=14)
-                    pdf.savefig(fig, bbox_inches="tight")
-                    plt.close(fig)
+            for prefix, natural_title in plot_titles.items():
+                image_path = PLOTS_DIR / f"{prefix}_{compiler}.png"
+                if image_path.exists():
+                    add_image_page(pdf, image_path, f"{natural_title} for {compiler.upper()}")
 
-        raw_columns = [
-            "compiler",
-            "server_threads",
-            "parallel_bench_processes",
-            "repetition",
-            "success",
-            "failed",
-            "total_iterations",
-            "downloads_per_process",
-            "elapsed_s",
-            "energy_j_raw",
-            "idle_energy_j_estimated",
-            "energy_j_net",
-            "throughput_mib_s",
+        if include_raw_results:
+            raw_columns = [
+                "Compiler",
+                "Server\nthreads",
+                "Parallel\nbenchmark\nclients",
+                "Rep.",
+                "Execution\ntime (s)",
+                "Raw\nenergy (J)",
+                "Net\nenergy (J)",
+                "Throughput\n(MiB/s)",
+                "Success",
+                "Fail",
+            ]
+            raw_rows = build_raw_results_rows(results)
+            raw_chunk = 14
+            raw_col_widths = [0.08, 0.08, 0.09, 0.06, 0.11, 0.11, 0.11, 0.12, 0.07, 0.07]
+            for i in range(0, len(raw_rows), raw_chunk):
+                add_table_page(
+                    pdf,
+                    f"Raw execution results (part {i // raw_chunk + 1})",
+                    raw_columns,
+                    raw_rows[i:i + raw_chunk],
+                    fontsize=8,
+                    scale_y=TABLE_RAW_VERTICAL_SCALE,
+                    col_widths=raw_col_widths,
+                )
+
+
+
+def generate_comparison_pdf_report(final_data, summary, results, output_path, include_raw_results):
+    with PdfPages(output_path) as pdf:
+        intro_lines = [
+            "Compiler comparison report",
+            f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            "This report directly compares GCC and Clang under equivalent benchmark configurations.",
+            "Each section groups the comparison by server thread count.",
+            f"Raw results included: {'yes' if include_raw_results else 'no'}",
+            "",
+            f"Served file: {final_data['file_served']}",
+            f"Parallel client cases: {final_data['cases']}",
+            f"Server thread counts: {final_data['server_threads']}",
+            f"Repetitions per case: {final_data['repetitions']}",
         ]
-        raw_rows = build_raw_results_rows(results)
+        add_text_page(pdf, "Compiler comparison report", intro_lines, fontsize=11)
 
-        raw_chunk = 10
-        for i in range(0, len(raw_rows), raw_chunk):
+        comparison_col_widths = [0.08, 0.15, 0.15, 0.15, 0.15, 0.16, 0.16]
+        for server_threads in SERVER_THREADS:
+            table_columns = [
+                "Parallel\nbenchmark\nclients",
+                "GCC execution\ntime summary",
+                "Clang execution\ntime summary",
+                "GCC net energy\nsummary",
+                "Clang net energy\nsummary",
+                "GCC throughput\nsummary",
+                "Clang throughput\nsummary",
+            ]
+            table_rows = build_comparison_table_rows(summary, server_threads)
             add_table_page(
                 pdf,
-                f"Resultados brutos por ejecucion (parte {i // raw_chunk + 1})",
-                raw_columns,
-                raw_rows[i:i + raw_chunk],
-                fontsize=7
+                f"GCC vs Clang comparison for {server_threads} server thread(s)",
+                table_columns,
+                table_rows,
+                fontsize=8,
+                scale_y=TABLE_COMPARISON_VERTICAL_SCALE,
+                col_widths=comparison_col_widths,
             )
 
+            comparison_images = [
+                (PLOTS_DIR / f"comparison_elapsed_threads_{server_threads}.png", "Mean total execution time"),
+                (PLOTS_DIR / f"comparison_net_energy_threads_{server_threads}.png", "Mean net energy consumption"),
+                (PLOTS_DIR / f"comparison_throughput_threads_{server_threads}.png", "Mean aggregate throughput"),
+            ]
 
+            for image_path, title in comparison_images:
+                if image_path.exists():
+                    add_image_page(
+                        pdf,
+                        image_path,
+                        f"{title}: GCC vs Clang with {server_threads} server thread(s)"
+                    )
+
+        if include_raw_results:
+            comparison_raw_rows = []
+            for item in results:
+                comparison_raw_rows.append([
+                    item["compiler"].upper(),
+                    str(item["server_threads"]),
+                    str(item["parallel_bench_processes"]),
+                    str(item["repetition"]),
+                    fmt(item["elapsed_s"], 4),
+                    fmt(item["energy_j"], 4),
+                    fmt(item["throughput_mib_s"], 4),
+                ])
+
+            comparison_raw_columns = [
+                "Compiler",
+                "Server\nthreads",
+                "Parallel\nclients",
+                "Rep.",
+                "Execution\ntime (s)",
+                "Net\nenergy (J)",
+                "Throughput\n(MiB/s)",
+            ]
+            comparison_raw_col_widths = [0.10, 0.09, 0.10, 0.06, 0.13, 0.13, 0.14]
+            raw_chunk = 18
+            for i in range(0, len(comparison_raw_rows), raw_chunk):
+                add_table_page(
+                    pdf,
+                    f"Comparison raw results (part {i // raw_chunk + 1})",
+                    comparison_raw_columns,
+                    comparison_raw_rows[i:i + raw_chunk],
+                    fontsize=8,
+                    scale_y=TABLE_RAW_VERTICAL_SCALE,
+                    col_widths=comparison_raw_col_widths,
+                )
+
+
+# =========================
+# CONSOLE SUMMARY
+# =========================
 def print_console_summary(summary):
     print("")
-    print("==== RESUMEN ESTADISTICO ====")
+    print("==== STATISTICAL SUMMARY ====")
 
     for item in summary:
         compiler = item["compiler"]
@@ -866,17 +1423,17 @@ def print_console_summary(summary):
             f"parallel_bench_processes={benches}"
         )
         print(
-            f"  tiempo_s: mean={elapsed['mean']:.6f} "
+            f"  time_s: mean={elapsed['mean']:.6f} "
             f"median={elapsed['median']:.6f} "
             f"min={elapsed['min']:.6f} max={elapsed['max']:.6f}"
         )
         print(
-            f"  energia_bruta_j: mean={energy_raw['mean']:.6f} "
+            f"  raw_energy_j: mean={energy_raw['mean']:.6f} "
             f"median={energy_raw['median']:.6f} "
             f"min={energy_raw['min']:.6f} max={energy_raw['max']:.6f}"
         )
         print(
-            f"  energia_neta_j: mean={energy_net['mean']:.6f} "
+            f"  net_energy_j: mean={energy_net['mean']:.6f} "
             f"median={energy_net['median']:.6f} "
             f"min={energy_net['min']:.6f} max={energy_net['max']:.6f}"
         )
@@ -888,15 +1445,22 @@ def print_console_summary(summary):
         print("")
 
 
+# =========================
+# MAIN
+# =========================
 def main():
     ensure_results_dir()
 
     all_results = []
 
-    for compiler in COMPILERS:
-        for server_threads in SERVER_THREADS:
-            results = run_campaign_for_compiler_and_threads(compiler, server_threads)
-            all_results.extend(results)
+    try:
+        for compiler in COMPILERS:
+            for server_threads in SERVER_THREADS:
+                results = run_campaign_for_compiler_and_threads(compiler, server_threads)
+                all_results.extend(results)
+    except KeyboardInterrupt:
+        log("Interrupted by user.")
+        raise
 
     final = {
         "file_served": FILE_TO_SERVE,
@@ -933,16 +1497,31 @@ def main():
         }, f, indent=4)
 
     write_csv(all_results)
-    generate_plots(all_results)
-    generate_pdf_report(final, summary, all_results)
-    print_console_summary(summary)
 
-    print("Done.")
-    print(f"Raw results: {FINAL_RESULTS}")
-    print(f"Summary: {SUMMARY_RESULTS}")
-    print(f"CSV: {CSV_RESULTS}")
-    print(f"PDF: {PDF_RESULTS}")
-    print(f"Plots directory: {RESULTS_DIR}")
+    if GENERATE_PLOTS:
+        generate_plots(all_results, summary)
+
+    if GENERATE_PDF:
+        generate_main_pdf_report(final, summary, all_results, MAIN_PDF_WITH_RAW, include_raw_results=True)
+        generate_main_pdf_report(final, summary, all_results, MAIN_PDF_NO_RAW, include_raw_results=False)
+
+    if GENERATE_COMPARISON_PDF:
+        generate_comparison_pdf_report(final, summary, all_results, COMPARISON_PDF_WITH_RAW, include_raw_results=True)
+        generate_comparison_pdf_report(final, summary, all_results, COMPARISON_PDF_NO_RAW, include_raw_results=False)
+
+    if PRINT_FINAL_SUMMARY:
+        print_console_summary(summary)
+
+    log("Done.")
+    log(f"Raw JSON: {FINAL_RESULTS}")
+    log(f"Summary JSON: {SUMMARY_RESULTS}")
+    log(f"CSV: {CSV_RESULTS}")
+    log(f"Main PDF report with raw results: {MAIN_PDF_WITH_RAW}")
+    log(f"Main PDF report without raw results: {MAIN_PDF_NO_RAW}")
+    log(f"Comparison PDF report with raw results: {COMPARISON_PDF_WITH_RAW}")
+    log(f"Comparison PDF report without raw results: {COMPARISON_PDF_NO_RAW}")
+    log(f"Plots directory: {PLOTS_DIR}")
+    log(f"Logs directory: {LOGS_DIR}")
 
 
 if __name__ == "__main__":

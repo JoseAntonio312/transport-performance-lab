@@ -1,55 +1,56 @@
-# COROSIO - Transferencia de ficheros y benchmarking en C++23
+# COROSIO - File transfer and benchmarking in C++23
 
-Este proyecto implementa una base de trabajo en **C++23** para estudiar transferencia de ficheros sobre **Corosio**, con foco en:
+This project provides a **C++23** experimental baseline for studying file transfer over **Corosio**, with a strong focus on:
 
-- implementación funcional de **servidor TCP**;
-- implementación funcional de **cliente TCP**;
-- soporte para **múltiples clientes concurrentes**;
-- compilación en **modo Release** con **CMake**;
-- compilación y comparación con **G++** y **Clang++**;
-- benchmarking con **Google Benchmark**;
-- campañas concurrentes con varios procesos `bench_tcp`;
-- medición energética mediante **RAPL/powercap**.
+- functional **TCP server** implementation;
+- functional **TCP client** implementation;
+- support for **multiple concurrent clients**;
+- **Release** builds with **CMake**;
+- comparison between **G++** and **Clang++** builds;
+- benchmarking with **Google Benchmark**;
+- concurrent campaigns with multiple `bench_tcp` processes;
+- energy measurement through **RAPL / powercap**;
+- automatic generation of **JSON**, **CSV**, **plots**, and **PDF reports**.
 
-La idea del proyecto es construir primero una versión funcional, limpia y reproducible y, a partir de ahí, realizar campañas de medición de:
-
-- tiempo;
-- escalabilidad;
-- throughput;
-- consumo energético;
-- media;
-- mediana;
-- percentiles;
-- máximos y mínimos.
-
-Además de comparar distintas tecnologías de transporte, esta versión incorpora también la comparación entre ejecutables compilados con **G++** y ejecutables compilados con **Clang++**, con especial interés en el posible impacto del compilador sobre la optimización de corrutinas.
+The goal is to keep the implementation as simple, reproducible, and comparable as possible so it can be used in controlled benchmarking campaigns.
 
 ---
 
-## Objetivo del proyecto
+## Project goal
 
-El objetivo actual del proyecto es disponer de una implementación propia con **Corosio** que sirva como base experimental para estudiar:
+The current goal of the project is to maintain a clean Corosio-based implementation that can be used as an experimental baseline to study:
 
-- transferencia de ficheros;
-- concurrencia con múltiples clientes;
-- benchmarking de rendimiento;
-- medición de consumo energético;
-- diferencias de comportamiento entre binarios compilados con **G++** y **Clang++**.
+- file transfer performance;
+- scalability with multiple concurrent clients;
+- throughput under different concurrency levels;
+- energy consumption;
+- statistical behavior across repeated runs;
+- differences between binaries compiled with **G++** and **Clang++**.
 
-En esta fase se está trabajando con **Corosio** como librería de networking basada en corrutinas, manteniendo una estructura lo más comparable posible con la versión equivalente basada en BSD sockets y ampliando el análisis a una segunda dimensión experimental: el compilador empleado.
+This version is intentionally designed to reduce experimental noise:
+
+- the server loads the file into memory once before accepting clients;
+- file system activity is kept outside the measured network-serving path;
+- the transfer protocol is kept minimal;
+- console output is minimized during measurements;
+- the automation script aggregates results and computes summary statistics.
 
 ---
 
-## Estructura del proyecto
+## Project structure
 
 ```text
 corosio/
 ├── benchmarks/
 │   ├── CMakeLists.txt
 │   └── bench_tcp.cpp
-├── build/
+├── build-gcc/
+├── build-clang/
 ├── results/
 │   ├── macro_bench_results.json
+│   ├── macro_bench_summary.json
+│   ├── macro_bench_results.csv
+│   ├── macro_bench_report.pdf
 │   └── micro_*.json
 ├── scripts/
 │   └── run_bench.py
@@ -65,116 +66,100 @@ corosio/
 
 ---
 
-## Componentes principales
+## Main components
 
-### 1. Servidor TCP
+### 1. TCP server
 
-El servidor:
+The server:
 
-- recibe por línea de comandos la ruta del fichero que debe servir;
-- carga el fichero completo en memoria;
-- construye un paquete con metadatos y contenido;
-- escucha conexiones TCP;
-- acepta múltiples clientes;
-- envía el mismo fichero a todos los clientes conectados;
-- trabaja con salida mínima por pantalla para no introducir ruido en las mediciones.
+- receives the path of the file to serve from the command line;
+- loads the full file into memory before starting the benchmarked serving phase;
+- listens for incoming TCP connections;
+- accepts multiple concurrent clients;
+- sends the same in-memory payload to every connected client;
+- minimizes console output to avoid measurement noise.
 
-La concurrencia se gestiona con **Corosio**, empleando un modelo basado en **corrutinas asíncronas** y operaciones de E/S no bloqueantes sobre sockets TCP.
+The current simplified design avoids per-client disk reads during the transfer phase, so the benchmark focuses on the networking and runtime behavior rather than storage effects.
 
-### 2. Cliente TCP
+### 2. TCP client
 
-El cliente:
+The client:
 
-- se conecta al servidor indicando IP y puerto;
-- recibe la cabecera del protocolo;
-- obtiene nombre y tamaño del fichero;
-- descarga el contenido;
-- lo guarda en disco;
-- también minimiza la salida por pantalla para mantener estabilidad en pruebas.
+- connects to the server using the provided IP and port;
+- receives raw bytes until the server closes the connection;
+- writes the received stream directly to an output file;
+- keeps runtime output minimal.
 
-La descarga se realiza con operaciones asíncronas de lectura sobre **Corosio**, manteniendo una estructura sencilla y comparable con otras implementaciones.
+In the simplified version currently used for the experiments, the client does **not** depend on a custom application-level header. It simply receives the byte stream until EOF.
 
-### 3. Benchmark TCP
+### 3. TCP benchmark
 
-El benchmark:
+The benchmark:
 
-- actúa como cliente de pruebas;
-- se conecta al servidor real;
-- descarga el fichero servido;
-- mide el tiempo de descarga usando **Google Benchmark**;
-- genera salida en consola y también en **JSON**.
+- acts as a measurement-oriented client;
+- connects to the real server;
+- downloads the full byte stream;
+- does **not** write the data to disk during the benchmarked path;
+- measures download time using **Google Benchmark**;
+- emits JSON output for later aggregation.
 
-Se utiliza como unidad básica de prueba. Las campañas concurrentes se construyen lanzando varios procesos `bench_tcp` en paralelo desde el script de automatización.
+Several benchmark processes can be launched concurrently by the automation script in order to emulate multiple simultaneous clients.
 
-### 4. Script de automatización
+### 4. Automation script
 
-El script en Python:
+The Python automation script:
 
-- arranca el servidor;
-- ejecuta campañas de benchmark;
-- puede lanzar uno o varios procesos `bench_tcp` en paralelo;
-- mide energía antes y después de cada campaña;
-- valida y procesa los JSON generados;
-- guarda resultados combinados en JSON.
-
-En la evolución actual del proyecto, este flujo está pensado para extenderse también a campañas que distingan explícitamente entre binarios generados con **G++** y con **Clang++**.
+- starts the server;
+- waits until the server is actually ready;
+- launches benchmark campaigns;
+- can run multiple `bench_tcp` processes in parallel;
+- measures energy before and after each campaign;
+- optionally subtracts an idle baseline from the measured energy;
+- validates and parses the generated JSON files;
+- produces aggregated **JSON**, **CSV**, **plots**, and **PDF reports**.
 
 ---
 
-## Protocolo de transferencia
+## Transfer model
 
-El servidor y el cliente siguen este protocolo:
+The current simplified Corosio version uses a **raw byte-stream model**:
 
 ```text
-[u32 tam_nombre][nombre][u64 tam_fichero][contenido]
+[file bytes only]
 ```
 
-### Significado
+### Meaning
 
-- `u32 tam_nombre`: tamaño del nombre del fichero en bytes;
-- `nombre`: nombre del fichero;
-- `u64 tam_fichero`: tamaño del fichero en bytes;
-- `contenido`: datos binarios del fichero.
+- the server sends the file contents directly;
+- the client keeps reading until the server closes the TCP connection;
+- no filename field is transmitted;
+- no file-size field is transmitted;
+- connection closure marks the end of the transfer.
 
-Este formato permite que el cliente sepa exactamente:
+This keeps the data path as small and simple as possible, which is useful for low-noise performance and energy measurements.
 
-- cuánto ocupa el nombre;
-- cuánto ocupa el fichero;
-- cuántos bytes debe recibir.
+> Note: older versions of the project used a custom header such as `[u32 filename_size][filename][u64 file_size][payload]`. That is **not** the current simplified design.
 
 ---
 
-## Requisitos del entorno
+## Environment requirements
 
-### Sistema
+### System
+
+Reference environment used in the project:
 
 - Ubuntu 24.04 LTS
-- Kernel Linux con soporte `powercap`
-- CPU de referencia: AMD Ryzen 7 7700
-- RAM de referencia: 32 GB DDR5 6000 MT/s
+- Linux kernel with `powercap` / RAPL support
+- x86_64 CPU with C++23-capable toolchains
 
-### Compiladores
+### Compilers
 
-Se trabaja con dos compiladores en **C++23**:
+The project is intended to be built and tested with:
 
 - **G++**
 - **Clang++**
 
-La intención experimental es poder compilar el mismo código con ambos y comparar resultados de rendimiento, escalabilidad y consumo.
-
-Ejemplo de configuración con GCC mediante `update-alternatives`:
-
-```bash
-sudo update-alternatives --install /usr/bin/g++ g++ /usr/local/gcc-14.1.0/bin/g++-14.1.0 14
-sudo update-alternatives --install /usr/bin/gcc gcc /usr/local/gcc-14.1.0/bin/gcc-14.1.0 14
-```
-
-Ejemplo de instalación de Clang:
-
-```bash
-sudo apt update
-sudo apt install clang
-```
+The experimental goal is to compare the same codebase under both compilers, especially because coroutine-heavy code may show relevant optimization differences depending on the toolchain.
 
 ### CMake
 
@@ -192,118 +177,95 @@ sudo apt install libbenchmark-dev
 ### Python
 
 ```bash
-sudo apt install python3 python3-pip
+sudo apt install python3 python3-pip python3-matplotlib
 ```
+
+If PDF reports are merged or post-processed at repository level, `pypdf` may also be required.
 
 ---
 
-## Dependencias de Corosio
+## Corosio dependency
 
-El proyecto usa **Corosio** como librería principal de networking y se integra mediante **CMake**. La base experimental se mantiene en **C++23**.
+This project uses **Corosio** as the networking library and relies on **C++23 coroutines**.
 
-La resolución de dependencias se realiza desde el propio `CMakeLists.txt` del proyecto, de forma que no es necesario instalar manualmente Corosio como paquete del sistema si se utiliza `FetchContent`.
+Depending on your local setup, Corosio may be:
 
-De forma general, la compilación de esta versión requiere:
+- provided through the project configuration;
+- downloaded through CMake dependency resolution;
+- or installed separately if your repository layout expects it.
 
-- soporte de **corrutinas de C++23** en el compilador;
+At minimum, you need:
+
+- a compiler with working **C++23 coroutine** support;
 - **CMake**;
-- **Google Benchmark** para los benchmarks;
-- acceso a las dependencias que `CMake` descargará para Corosio.
+- **Google Benchmark** for `bench_tcp`;
+- the Corosio headers and libraries accessible to the build.
 
 ---
 
-## Compilación del proyecto
+## Building the project
 
-El proyecto está preparado para compilarse en **Release**.
+The project is expected to be built in **Release** mode.
 
-### Script recomendado
+### Recommended build script
 
 ```bash
 sudo ./build_release.sh
 ```
 
-### Compilación con distintos compiladores
+### Typical build targets
 
-La línea experimental actual contempla compilar y probar esta implementación tanto con **G++** como con **Clang++**.
+This project usually builds:
 
-El objetivo es generar dos conjuntos de ejecutables comparables:
+- `tcpserver`
+- `tcpclient`
+- `bench_tcp`
 
-- una versión compilada con **G++**;
-- una versión compilada con **Clang++**.
+and may generate separate build directories such as:
 
-De este modo, cada campaña podrá repetirse con ambos compiladores sin cambiar el código fuente, aislando el efecto del compilador dentro del estudio.
+- `build-gcc/`
+- `build-clang/`
 
----
-
-## Tipos de prueba
-
-### Prueba individual
-
-Consiste en ejecutar un único proceso `bench_tcp` para medir de forma controlada la descarga completa del fichero servido por el servidor.
-
-### Campaña concurrente
-
-Consiste en lanzar varios procesos `bench_tcp` en paralelo, simulando múltiples clientes atacando al mismo fichero al mismo tiempo.
-
-Ejemplos de campañas posibles:
-
-- 1 proceso `bench_tcp`
-- 2 procesos `bench_tcp`
-- 4 procesos `bench_tcp`
-- 8 procesos `bench_tcp`
-- 16 procesos `bench_tcp`
-
-Este enfoque permite medir:
-
-- tiempo total de campaña;
-- consumo energético;
-- comportamiento bajo concurrencia;
-- escalabilidad del servidor.
-
-### Campaña por compilador
-
-Además de la dimensión de concurrencia, las pruebas pueden repetirse para dos familias de binarios:
-
-- binarios compilados con **G++**;
-- binarios compilados con **Clang++**.
-
-Esto permite observar si existen diferencias relevantes en:
-
-- coste temporal de las corrutinas;
-- throughput;
-- escalabilidad;
-- eficiencia energética;
-- estabilidad de las mediciones.
+so both toolchains can be benchmarked independently.
 
 ---
 
-## Ejecución
+## Running the project
 
-### Compilar
-
-```bash
-sudo ./build_release.sh
-```
-
-### Lanzar el servidor manualmente
+### Start the server manually
 
 ```bash
-./build/tcpserver/tcpserver ./archivo.txt 8080
+./build-gcc/tcpserver/tcpserver ../files/1GB.bin 8120 1
 ```
 
-### Lanzar una prueba individual
+Example meaning:
+
+- serve `../files/1GB.bin`;
+- listen on port `8120`;
+- run with `1` server thread.
+
+### Run the client manually
 
 ```bash
-./build/benchmarks/bench_tcp   --benchmark_min_time=1s   --benchmark_repetitions=1   --benchmark_out=results/micro.json   --benchmark_out_format=json
+./build-gcc/tcpclient/tcpclient 127.0.0.1 8120 downloaded.bin
 ```
 
-### Lanzar la campaña automática
+### Run a single benchmark manually
+
+```bash
+./build-gcc/benchmarks/bench_tcp \
+  --server_port=8120 \
+  --benchmark_out=results/micro.json \
+  --benchmark_out_format=json
+```
+
+### Run the automated campaign
 
 ```bash
 sudo python3 scripts/run_bench.py
 ```
 
-o:
+or:
 
 ```bash
 sudo ./scripts/run_bench.py
@@ -311,116 +273,128 @@ sudo ./scripts/run_bench.py
 
 ---
 
-## Resultados generados
+## Benchmark methodology
 
-En las pruebas individuales, Google Benchmark produce resultados con:
+The campaign script is prepared to explore combinations such as:
 
-- tiempo real;
-- tiempo de CPU;
-- número de iteraciones;
-- repeticiones;
-- agregados como media, mediana, desviación estándar y coeficiente de variación.
+- server thread counts: `1`, `2`, `4`, `8`;
+- parallel benchmark clients: `1`, `2`, `4`, `8`, `16`;
+- repeated executions per case;
+- separate GCC and Clang campaigns.
 
-En las campañas concurrentes, el script añade además:
+Typical measured quantities are:
 
-- tiempo total de campaña;
-- energía consumida;
-- número de procesos lanzados;
-- iteraciones válidas;
-- bytes transferidos;
-- throughput agregado.
+- total campaign time;
+- raw energy;
+- estimated idle energy;
+- net energy;
+- aggregate throughput;
+- downloads per process;
+- valid and failed runs.
 
-En la extensión por compilador, los resultados deberán poder distinguir también:
+The script also computes summary statistics such as:
 
-- compilador utilizado;
-- binario ejecutado;
-- comparabilidad entre resultados equivalentes generados con **G++** y **Clang++**.
+- count;
+- mean;
+- median;
+- standard deviation;
+- p25;
+- p50;
+- p95;
+- minimum;
+- maximum.
 
 ---
 
-## Script de automatización
+## Generated outputs
 
-### Ruta
+The campaign produces files such as:
+
+### `results/micro_*.json`
+
+Per-process Google Benchmark JSON outputs.
+
+### `results/macro_bench_results.json`
+
+Aggregated raw campaign results.
+
+### `results/macro_bench_summary.json`
+
+Statistical summary grouped by:
+
+- compiler;
+- server thread count;
+- number of parallel benchmark processes.
+
+### `results/macro_bench_results.csv`
+
+Flat tabular export of the raw campaign results.
+
+### `results/macro_bench_report.pdf`
+
+A generated PDF report that can include:
+
+- experiment metadata;
+- statistical summary tables;
+- auxiliary summary tables;
+- raw execution tables;
+- plots for time, energy, throughput, and downloads per process.
+
+---
+
+## Idle baseline and net energy
+
+The benchmarking workflow can optionally use an idle-power baseline stored in a repository-level file such as:
 
 ```text
-scripts/run_bench.py
+idle_baseline.json
 ```
 
-### Qué hace
+When enabled, the script can compute:
 
-El script:
+- **raw energy** measured through RAPL;
+- **estimated idle energy** during the same elapsed interval;
+- **net energy** = raw energy - estimated idle energy.
 
-1. arranca el servidor;
-2. espera a que quede realmente listo;
-3. mide energía inicial;
-4. lanza una campaña de benchmark;
-5. mide energía final;
-6. valida y procesa los ficheros `micro_*.json`;
-7. genera `results/macro_bench_results.json`.
-
-En su evolución natural dentro de este proyecto, el script podrá ejecutarse también separando campañas por compilador para comparar de forma sistemática los binarios generados con **G++** y **Clang++**.
+This makes the energy analysis more meaningful than reporting raw RAPL deltas alone.
 
 ---
 
-## Ajustes recomendados para medir bien
+## Recommendations for reliable measurements
 
-### Fijar governor
+To obtain more stable and scientifically useful results, it is recommended to:
+
+- always build in **Release** mode;
+- keep the machine as idle and stable as possible;
+- disable heavy background tasks when possible;
+- keep the CPU governor consistent;
+- allow cooldown periods between libraries and between distinct benchmark cases;
+- optionally flush caches or perform cache trashing between cases if that is part of the methodology;
+- run enough repetitions to obtain meaningful distributions rather than single-point results;
+- compare GCC and Clang under the same machine conditions.
+
+Example CPU governor configuration:
 
 ```bash
 sudo cpupower frequency-set -g performance
 ```
 
-### Otras recomendaciones
+---
 
-- compilar siempre en `Release`;
-- evitar `Debug`;
-- repetir el mismo caso con **G++** y **Clang++** bajo las mismas condiciones;
-- cerrar programas pesados;
-- repetir experimentos varias veces;
-- controlar temperatura inicial;
-- evitar ruido térmico y de frecuencia.
+## Notes on the current simplified design
+
+The current Corosio version is intentionally more minimal than earlier protocol-based versions:
+
+- the server sends only the file bytes;
+- the client reads until EOF;
+- the benchmark avoids disk output in the measured path;
+- the code tries to minimize unnecessary allocations and noisy runtime behavior;
+- the goal is to isolate networking and coroutine/runtime behavior as much as possible.
+
+This simplified version is better aligned with low-noise benchmarking than a richer application protocol, because it avoids adding metadata parsing and extra protocol logic to the measured path.
 
 ---
 
-## Ficheros de salida
-
-### `results/micro_*.json`
-
-Contienen la salida de Google Benchmark en JSON para cada proceso `bench_tcp` ejecutado durante la campaña.
-
-### `results/macro_bench_results.json`
-
-Contiene un resumen procesado con:
-
-- tiempo total de campaña;
-- energía total consumida;
-- procesos válidos y fallidos;
-- iteraciones válidas;
-- bytes transferidos;
-- throughput agregado.
-
-En la fase comparativa por compilador, conviene que estos resultados puedan asociarse también al compilador con el que se generó cada ejecutable.
-
----
-
-## Notas de implementación
-
-Esta versión sustituye la multiplexación manual con `poll()` por un modelo basado en **corrutinas** con **Corosio**, manteniendo:
-
-- el mismo protocolo de transferencia;
-- una organización del proyecto equivalente;
-- una implementación con salida mínima;
-- la comparabilidad experimental con otras versiones del mismo trabajo.
-
-Además, se incorpora una nueva dimensión experimental basada en el compilador utilizado, de modo que la misma implementación pueda analizarse con:
-
-- **G++**;
-- **Clang++**.
-
-El objetivo es que la comparación entre tecnologías se haga sobre una base lo más homogénea posible en estructura, protocolo y metodología de medida, y que también sea posible observar el posible impacto del compilador sobre la generación de código para corrutinas.
-
----
-
-## Autor
+## Author
 
 **José Antonio García Montañez**

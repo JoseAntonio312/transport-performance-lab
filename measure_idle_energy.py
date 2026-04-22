@@ -38,11 +38,11 @@ def main():
     joules = []
     watts = []
 
-    print(f"Midiendo consumo en reposo: {REPETITIONS} repeticiones de {SAMPLE_SECONDS} s")
-    print("Deja el equipo quieto, sin benchmarks ni carga extra.\n")
+    print(f"Measuring idle power consumption: {REPETITIONS} repetitions of {SAMPLE_SECONDS} s")
+    print("Leave the system idle, with no benchmarks or extra workload.\n")
 
     for i in range(REPETITIONS):
-        print(f"Repeticion {i + 1}/{REPETITIONS}...")
+        print(f"Repetition {i + 1}/{REPETITIONS}...")
         e1 = read_energy()
         time.sleep(SAMPLE_SECONDS)
         e2 = read_energy()
@@ -53,8 +53,8 @@ def main():
         joules.append(j)
         watts.append(w)
 
-        print(f"  Julios: {j:.6f} J")
-        print(f"  Vatios: {w:.6f} W\n")
+        print(f"  Joules: {j:.6f} J")
+        print(f"  Watts: {w:.6f} W\n")
 
     result = {
         "sample_seconds": SAMPLE_SECONDS,
@@ -70,12 +70,12 @@ def main():
     with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=4)
 
-    print("==== RESUMEN ====")
-    print(f"Julios medios en {SAMPLE_SECONDS} s: {result['joules_mean']:.6f} J")
-    print(f"Julios mediana en {SAMPLE_SECONDS} s: {result['joules_median']:.6f} J")
-    print(f"Potencia media en reposo: {result['watts_mean']:.6f} W")
-    print(f"Potencia mediana en reposo: {result['watts_median']:.6f} W")
-    print(f"\nGuardado en: {OUTPUT_JSON}")
+    print("==== SUMMARY ====")
+    print(f"Mean joules over {SAMPLE_SECONDS} s: {result['joules_mean']:.6f} J")
+    print(f"Median joules over {SAMPLE_SECONDS} s: {result['joules_median']:.6f} J")
+    print(f"Mean idle power: {result['watts_mean']:.6f} W")
+    print(f"Median idle power: {result['watts_median']:.6f} W")
+    print(f"\nSaved to: {OUTPUT_JSON}")
 
 
 if __name__ == "__main__":

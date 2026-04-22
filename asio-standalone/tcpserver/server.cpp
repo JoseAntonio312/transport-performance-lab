@@ -2,130 +2,128 @@
  * Copyright (c) 2026 José Antonio García Montañez
  *
  * TCP file server with Asio
- * Minimal output version for performance and energy measurements.
+ * Minimal raw-byte server for performance and energy measurements.
  */
 
 #include <csignal>
 
 #include <asio.hpp>
 
-#include <arpa/inet.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <memory>
+#include <span>
 #include <string>
 #include <thread>
-#include <vector>
 
-// Alias std::filesystem
 namespace fs = std::filesystem;
 using tcp = asio::ip::tcp;
 
-// Puerto por defecto
+// Default TCP listening port.
 constexpr int DEFAULT_PORT = 8080;
 
-// Conexiones tope
+// Maximum pending connections in the listen queue.
 constexpr int BACKLOG = 128;
 
-// Estructura estado cliente
-struct ClientState {
-    tcp::socket socket;
-    std::size_t sent = 0;
+// Maximum supported worker threads for the fixed-size thread array.
+constexpr int MAX_THREADS = 256;
 
-    explicit ClientState(asio::io_context& io_context)
-        : socket(io_context) {}
+// Read-only file mapping.
+struct FileMapping {
+    int fd = -1;
+    const char* data = nullptr;
+    std::size_t size = 0;
 };
 
-static void append_u32(std::vector<char>& buffer, std::uint32_t value) {
-    std::uint32_t net = htonl(value);
-    const char* p = reinterpret_cast<const char*>(&net);
-    buffer.insert(buffer.end(), p, p + sizeof(net));
-}
+// Open the file and expose it as a read-only memory mapping.
+// This avoids std::vector while still providing a contiguous byte range.
+static FileMapping map_file_read_only(const fs::path& path) {
+    FileMapping mapping{};
 
-static void append_u64(std::vector<char>& buffer, std::uint64_t value) {
-    std::uint32_t high = htonl(static_cast<std::uint32_t>(value >> 32));
-    std::uint32_t low  = htonl(static_cast<std::uint32_t>(value & 0xFFFFFFFFULL));
+    const std::uintmax_t file_size = fs::file_size(path);
+    mapping.size = static_cast<std::size_t>(file_size);
 
-    const char* p1 = reinterpret_cast<const char*>(&high);
-    const char* p2 = reinterpret_cast<const char*>(&low);
-
-    buffer.insert(buffer.end(), p1, p1 + sizeof(high));
-    buffer.insert(buffer.end(), p2, p2 + sizeof(low));
-}
-
-static std::vector<char> load_file(const fs::path& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("No se pudo abrir el fichero: " + path.string());
+    mapping.fd = open(path.c_str(), O_RDONLY);
+    if (mapping.fd == -1) {
+        throw std::runtime_error("Failed to open file: " + path.string());
     }
 
-    file.seekg(0, std::ios::end);
-    std::streamsize size = file.tellg();
-    file.seekg(0, std::ios::beg);
-
-    if (size < 0) {
-        throw std::runtime_error("No se pudo obtener el tamano del fichero.");
+    if (mapping.size == 0) {
+        mapping.data = nullptr;
+        return mapping;
     }
 
-    std::vector<char> data(static_cast<std::size_t>(size));
-
-    if (size > 0 && !file.read(data.data(), size)) {
-        throw std::runtime_error("Error leyendo el fichero.");
+    void* ptr = mmap(nullptr, mapping.size, PROT_READ, MAP_PRIVATE, mapping.fd, 0);
+    if (ptr == MAP_FAILED) {
+        close(mapping.fd);
+        throw std::runtime_error("mmap failed.");
     }
 
-    return data;
+    mapping.data = static_cast<const char*>(ptr);
+    return mapping;
 }
 
-static std::vector<char> build_packet(const std::string& filename, const std::vector<char>& file_data) {
-    std::vector<char> packet;
-    packet.reserve(sizeof(std::uint32_t) + filename.size() +
-                   sizeof(std::uint64_t) + file_data.size());
+// Release a file mapping created by map_file_read_only().
+static void unmap_file(FileMapping& mapping) {
+    if (mapping.data != nullptr && mapping.size > 0) {
+        munmap(const_cast<char*>(mapping.data), mapping.size);
+    }
 
-    append_u32(packet, static_cast<std::uint32_t>(filename.size()));
-    packet.insert(packet.end(), filename.begin(), filename.end());
+    if (mapping.fd != -1) {
+        close(mapping.fd);
+    }
 
-    append_u64(packet, static_cast<std::uint64_t>(file_data.size()));
-    packet.insert(packet.end(), file_data.begin(), file_data.end());
-
-    return packet;
+    mapping.data = nullptr;
+    mapping.fd = -1;
+    mapping.size = 0;
 }
 
-static asio::awaitable<void> do_write(std::shared_ptr<ClientState> client,
-                                      std::shared_ptr<const std::vector<char>> packet) {
+// Send the whole mapped payload to one client socket.
+static asio::awaitable<void> do_write(tcp::socket socket, std::span<const char> payload) {
+    std::size_t sent = 0;
+
     try {
-        while (client->sent < packet->size()) {
-            std::size_t n = co_await client->socket.async_write_some(
-                asio::buffer(packet->data() + client->sent, packet->size() - client->sent),
+        while (sent < payload.size()) {
+            const std::size_t bytes_transferred = co_await socket.async_write_some(
+                asio::buffer(payload.data() + sent, payload.size() - sent),
                 asio::use_awaitable
             );
 
-            client->sent += n;
+            if (bytes_transferred == 0) {
+                break;
+            }
+
+            sent += bytes_transferred;
         }
     } catch (...) {
     }
 
     std::error_code close_ec;
-    client->socket.shutdown(tcp::socket::shutdown_both, close_ec);
-    client->socket.close(close_ec);
+    socket.shutdown(tcp::socket::shutdown_both, close_ec);
+    socket.close(close_ec);
 
     co_return;
 }
 
-static asio::awaitable<void> do_accept(asio::io_context& io_context,
-                                       tcp::acceptor& acceptor,
-                                       std::shared_ptr<const std::vector<char>> packet) {
-    while (true) {
-        auto client = std::make_shared<ClientState>(io_context);
+// Accept connections forever and spawn one coroutine per client.
+static asio::awaitable<void> do_accept(tcp::acceptor& acceptor, std::span<const char> payload) {
+    auto executor = co_await asio::this_coro::executor;
 
+    while (true) {
         try {
-            co_await acceptor.async_accept(client->socket, asio::use_awaitable);
+            tcp::socket socket(executor);
+            co_await acceptor.async_accept(socket, asio::use_awaitable);
 
             asio::co_spawn(
-                io_context,
-                do_write(client, packet),
+                executor,
+                do_write(std::move(socket), payload),
                 asio::detached
             );
         } catch (...) {
@@ -137,7 +135,7 @@ int main(int argc, char* argv[]) {
     std::signal(SIGPIPE, SIG_IGN);
 
     if (argc < 2 || argc > 4) {
-        std::cerr << "Uso: " << argv[0] << " <ruta_fichero> [puerto] [num_hebras]\n";
+        std::cerr << "Usage: " << argv[0] << " <file_path> [port] [threads]\n";
         return 1;
     }
 
@@ -148,96 +146,93 @@ int main(int argc, char* argv[]) {
     if (argc >= 3) {
         port = std::stoi(argv[2]);
         if (port <= 0 || port > 65535) {
-            std::cerr << "Puerto invalido.\n";
+            std::cerr << "Invalid port.\n";
             return 1;
         }
     }
 
     if (argc == 4) {
         threads = std::stoi(argv[3]);
-        if (threads <= 0) {
-            std::cerr << "Numero de hebras invalido.\n";
+        if (threads <= 0 || threads > MAX_THREADS) {
+            std::cerr << "Invalid thread count.\n";
             return 1;
         }
     }
 
     if (!fs::exists(file_path) || !fs::is_regular_file(file_path)) {
-        std::cerr << "El fichero no existe o no es regular: " << file_path << "\n";
+        std::cerr << "Input path is not a regular file: " << file_path << "\n";
         return 1;
     }
 
-    std::vector<char> file_data;
+    FileMapping mapping{};
     try {
-        file_data = load_file(file_path);
+        mapping = map_file_read_only(file_path);
     } catch (const std::exception& e) {
-        std::cerr << e.what() << "\n";
+        std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
 
-    const std::string filename = file_path.filename().string();
-    auto packet = std::make_shared<const std::vector<char>>(build_packet(filename, file_data));
+    const std::span<const char> payload(mapping.data, mapping.size);
 
     try {
         asio::io_context io_context;
         auto work_guard = asio::make_work_guard(io_context);
 
-        std::error_code ec;
         tcp::acceptor acceptor(io_context);
+        std::error_code ec;
 
         acceptor.open(tcp::v4(), ec);
         if (ec) {
             std::cerr << "open: " << ec.message() << "\n";
+            unmap_file(mapping);
             return 1;
         }
 
         acceptor.set_option(asio::socket_base::reuse_address(true), ec);
         if (ec) {
-            std::cerr << "setsockopt: " << ec.message() << "\n";
+            std::cerr << "set_option: " << ec.message() << "\n";
+            unmap_file(mapping);
             return 1;
         }
 
-        tcp::endpoint endpoint(tcp::v4(), static_cast<unsigned short>(port));
-
-        acceptor.bind(endpoint, ec);
+        acceptor.bind(tcp::endpoint(tcp::v4(), static_cast<unsigned short>(port)), ec);
         if (ec) {
             std::cerr << "bind: " << ec.message() << "\n";
+            unmap_file(mapping);
             return 1;
         }
 
         acceptor.listen(BACKLOG, ec);
         if (ec) {
             std::cerr << "listen: " << ec.message() << "\n";
+            unmap_file(mapping);
             return 1;
         }
 
-        std::cout << "Server ready on port " << port
-                  << " with " << threads << " threads\n";
-
         asio::co_spawn(
             io_context,
-            do_accept(io_context, acceptor, packet),
+            do_accept(acceptor, payload),
             asio::detached
         );
 
-        std::vector<std::thread> pool;
-        pool.reserve(static_cast<std::size_t>(threads > 1 ? threads - 1 : 0));
+        std::thread pool[MAX_THREADS];
 
-        for (int i = 1; i < threads; ++i) {
-            pool.emplace_back([&io_context]() {
+        for (int i = 0; i < threads; ++i) {
+            pool[i] = std::thread([&io_context]() {
                 io_context.run();
             });
         }
 
-        io_context.run();
-
-        for (auto& t : pool) {
-            t.join();
+        for (int i = 0; i < threads; ++i) {
+            pool[i].join();
         }
 
     } catch (const std::exception& e) {
-        std::cerr << e.what() << "\n";
+        std::cerr << "Error: " << e.what() << "\n";
+        unmap_file(mapping);
         return 1;
     }
 
+    unmap_file(mapping);
     return 0;
 }

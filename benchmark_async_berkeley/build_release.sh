@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ASYNC_BERKELEY_DIR="/home/jagarcia/Escritorio/TFM/async-berkeley/async-berkeley" #YOUR PATH
+
+if [ ! -f "$ASYNC_BERKELEY_DIR/CMakeLists.txt" ]; then
+    echo "Error: async-berkeley was not found at $ASYNC_BERKELEY_DIR"
+    exit 1
+fi
+
 build_one() {
     local compiler="$1"
     local build_dir=""
@@ -41,13 +48,15 @@ build_one() {
 
     cmake -S . -B "$build_dir" \
         -DCMAKE_BUILD_TYPE=Release \
+        -DASYNC_BERKELEY_DIR="$ASYNC_BERKELEY_DIR" \
         -DCMAKE_C_COMPILER="$c_compiler" \
         -DCMAKE_CXX_COMPILER="$cxx_compiler"
 
-    cmake --build "$build_dir" --config Release -j"$(nproc)"
+    cmake --build "$build_dir" --config Release -j"$(nproc)" \
+        --target tcpserver tcpclient bench_tcp
 
     echo ""
-    echo "ASIO STANDALONE build completed in Release mode with $compiler_label."
+    echo "ASYNC-BERKELEY build completed in Release mode with $compiler_label."
     echo "Executables:"
     echo "  $build_dir/tcpserver/tcpserver"
     echo "  $build_dir/tcpclient/tcpclient"

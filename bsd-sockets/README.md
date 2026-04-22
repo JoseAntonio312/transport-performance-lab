@@ -1,56 +1,92 @@
-# BSD SOCKETS POLL - Transferencia de ficheros y benchmarking en C++23
+# BSD SOCKETS POLL - File transfer and benchmarking in C++23
 
-Este proyecto implementa una base de trabajo en **C++23** para estudiar transferencia de ficheros sobre **BSD sockets**, con foco en:
+This project provides a **C++23** experimental baseline for studying file transfer over **BSD sockets with `poll()`**, with a focus on:
 
-- implementación funcional de **servidor TCP**;
-- implementación funcional de **cliente TCP**;
-- soporte para **múltiples clientes concurrentes**;
-- compilación en **modo Release** con **CMake**;
-- compilación y comparación con **G++** y **Clang++**;
-- benchmarking con **Google Benchmark**;
-- campañas concurrentes con varios procesos `bench_tcp`;
-- medición energética mediante **RAPL/powercap**.
+- a functional **TCP server**;
+- a functional **TCP client**;
+- support for **multiple concurrent clients**;
+- **Release** builds with **CMake**;
+- builds and comparisons with **G++** and **Clang++**;
+- benchmarking with **Google Benchmark**;
+- concurrent benchmark campaigns using multiple `bench_tcp` processes;
+- energy measurements through **RAPL / powercap**.
 
-La idea del proyecto es construir primero una versión funcional, limpia y reproducible y, a partir de ahí, realizar campañas de medición de:
+The goal is to keep the implementation as simple, reproducible, and efficient as possible so that benchmark results are driven by the transport mechanism itself rather than by unnecessary abstraction overhead.
 
-- tiempo;
-- escalabilidad;
-- throughput;
-- consumo energético;
-- media;
-- mediana;
-- percentiles;
-- máximos y mínimos.
+This current BSD sockets variant is aligned with the simplified raw-byte design used in the other implementations:
 
-Además de comparar distintas tecnologías de transporte, esta versión incorpora también la comparación entre ejecutables compilados con **G++** y ejecutables compilados con **Clang++**, con el objetivo de estudiar si el compilador introduce diferencias medibles incluso sobre una implementación basada en BSD sockets.
+- the server sends **raw file bytes only**;
+- the client receives bytes **until EOF**;
+- there is **no custom application header**;
+- the benchmark downloads the full payload **until the connection is closed**.
 
 ---
 
-## Objetivo del proyecto
+## Project objective
 
-El objetivo actual del proyecto es disponer de una implementación propia con **BSD sockets** que sirva como base experimental para estudiar:
+The current objective of this project is to provide a BSD sockets implementation that can serve as an experimental baseline for studying:
 
-- transferencia de ficheros;
-- concurrencia con múltiples clientes;
-- benchmarking de rendimiento;
-- medición de consumo energético;
-- diferencias de comportamiento entre binarios compilados con **G++** y **Clang++**.
+- file transfer performance;
+- concurrency with multiple clients;
+- benchmark reproducibility;
+- energy consumption;
+- differences between binaries compiled with **G++** and **Clang++**.
 
-En esta fase se está trabajando con una implementación basada en **BSD sockets**, manteniendo la misma lógica de pruebas y ampliando el análisis a una segunda dimensión experimental: el compilador utilizado.
+At this stage, the implementation is intentionally kept close to the simplified raw-byte design used in the rest of the benchmark suite so that comparisons across transport technologies remain as fair as possible.
 
 ---
 
-## Estructura del proyecto
+## Current transfer model
+
+This version does **not** use a custom transfer protocol.
+
+### Server behavior
+
+The server:
+
+- receives the file path from the command line;
+- opens the file and maps it read-only into memory;
+- listens for TCP connections;
+- accepts multiple clients concurrently;
+- sends the file contents as **raw bytes only**;
+- closes the connection after the full file has been sent.
+
+### Client behavior
+
+The client:
+
+- connects to the server using IP and port;
+- receives bytes in a fixed-size buffer;
+- writes them directly to the output file;
+- stops when the server closes the connection.
+
+### Benchmark behavior
+
+The benchmark:
+
+- acts as a minimal client;
+- connects to the real server;
+- receives bytes until EOF;
+- measures one full download per iteration using **Google Benchmark**.
+
+This makes the BSD sockets implementation more directly comparable to the simplified Corosio version.
+
+---
+
+## Project structure
 
 ```text
 bsd-sockets/
 ├── benchmarks/
 │   ├── CMakeLists.txt
 │   └── bench_tcp.cpp
-├── build/
+├── build-gcc/
+├── build-clang/
 ├── results/
-│   ├── macro_bench_results.json
-│   └── micro_*.json
+│   ├── raw/
+│   ├── plots/
+│   ├── reports/
+│   └── logs/
 ├── scripts/
 │   └── run_bench.py
 ├── tcpclient/
@@ -65,228 +101,185 @@ bsd-sockets/
 
 ---
 
-## Componentes principales
+## Main components
 
-### 1. Servidor TCP
+### 1. TCP server
 
-El servidor:
+The server is a minimal raw-byte TCP sender.
 
-- recibe por línea de comandos la ruta del fichero que debe servir;
-- carga el fichero completo en memoria;
-- construye un paquete con metadatos y contenido;
-- escucha conexiones TCP;
-- acepta múltiples clientes;
-- envía el mismo fichero a todos los clientes conectados;
-- trabaja con salida mínima por pantalla para no introducir ruido en las mediciones.
+Main properties:
 
-La concurrencia se gestiona con multiplexación de E/S, sin uso de hilos en esta parte del servidor.
+- the input file is exposed as a read-only memory region;
+- no application-level header is generated;
+- each client receives the exact same byte stream;
+- once the full payload has been sent, the socket is closed;
+- the implementation uses `poll()` and non-blocking sockets;
+- concurrency is handled with **worker threads**, each one polling the shared listening socket and its own client set.
 
-### 2. Cliente TCP
+This keeps the implementation simple and efficient while remaining faithful to a low-level BSD sockets design.
 
-El cliente:
+### 2. TCP client
 
-- se conecta al servidor indicando IP y puerto;
-- recibe la cabecera del protocolo;
-- obtiene nombre y tamaño del fichero;
-- descarga el contenido;
-- lo guarda en disco;
-- también minimiza la salida por pantalla para mantener estabilidad en pruebas.
+The client is a minimal raw-byte TCP receiver.
 
-### 3. Benchmark TCP
+Main properties:
 
-El benchmark:
+- non-blocking socket connection;
+- connection completion handled with `poll()`;
+- data reception in a fixed-size buffer;
+- direct write to disk;
+- termination on EOF.
 
-- actúa como cliente de pruebas;
-- se conecta al servidor real;
-- descarga el fichero servido;
-- mide el tiempo de descarga usando **Google Benchmark**;
-- genera salida en consola y también en **JSON**.
+### 3. TCP benchmark
 
-Se utiliza como unidad básica de prueba. Las campañas concurrentes se construyen lanzando varios procesos `bench_tcp` en paralelo desde el script de automatización.
+The benchmark behaves like the minimal client, but without writing to disk.
 
-### 4. Script de automatización
+Main properties:
 
-El script en Python:
+- connects to the server;
+- downloads until EOF;
+- uses a fixed-size receive buffer;
+- measures one full transfer per benchmark iteration.
 
-- arranca el servidor;
-- ejecuta campañas de benchmark;
-- puede lanzar uno o varios procesos `bench_tcp` en paralelo;
-- mide energía antes y después de cada campaña;
-- valida y procesa los JSON generados;
-- guarda resultados combinados en JSON.
+Multiple concurrent benchmark clients are launched externally by the Python automation script.
 
-En la evolución actual del proyecto, este flujo está pensado para extenderse también a campañas que distingan explícitamente entre binarios generados con **G++** y con **Clang++**.
+### 4. Automation script
 
----
+The Python script:
 
-## Protocolo de transferencia
-
-El servidor y el cliente siguen este protocolo:
-
-```text
-[u32 tam_nombre][nombre][u64 tam_fichero][contenido]
-```
-
-### Significado
-
-- `u32 tam_nombre`: tamaño del nombre del fichero en bytes;
-- `nombre`: nombre del fichero;
-- `u64 tam_fichero`: tamaño del fichero en bytes;
-- `contenido`: datos binarios del fichero.
-
-Este formato permite que el cliente sepa exactamente:
-
-- cuánto ocupa el nombre;
-- cuánto ocupa el fichero;
-- cuántos bytes debe recibir.
+- starts the server automatically;
+- waits until the server is actually ready;
+- launches multiple `bench_tcp` processes in parallel;
+- measures raw and net energy;
+- collects JSON benchmark outputs;
+- computes aggregated statistics;
+- generates CSV files, plots, and PDF reports.
 
 ---
 
-## Requisitos del entorno
+## Environment requirements
 
-### Sistema
+### Operating system
 
 - Ubuntu 24.04 LTS
-- Kernel Linux con soporte `powercap`
-- CPU de referencia: AMD Ryzen 7 7700
-- RAM de referencia: 32 GB DDR5 6000 MT/s
+- Linux kernel with `powercap` support
 
-### Compiladores
+### Compilers
 
-Se trabaja con dos compiladores en **C++23**:
+The project is intended to be built with both:
 
 - **G++**
 - **Clang++**
 
-La intención experimental es poder compilar el mismo código con ambos y comparar resultados de rendimiento, escalabilidad y consumo.
-
-Ejemplo de configuración con GCC mediante `update-alternatives`:
+Example GCC configuration:
 
 ```bash
 sudo update-alternatives --install /usr/bin/g++ g++ /usr/local/gcc-14.1.0/bin/g++-14.1.0 14
 sudo update-alternatives --install /usr/bin/gcc gcc /usr/local/gcc-14.1.0/bin/gcc-14.1.0 14
 ```
 
-Ejemplo de instalación de Clang:
+Example Clang installation:
 
 ```bash
 sudo apt update
-sudo apt install clang
+sudo apt install -y clang
 ```
 
-### CMake
+### Build tools
 
 ```bash
 sudo apt update
-sudo apt install cmake
+sudo apt install -y cmake make
 ```
 
 ### Google Benchmark
 
 ```bash
-sudo apt install libbenchmark-dev
+sudo apt install -y libbenchmark-dev
 ```
 
 ### Python
 
 ```bash
-sudo apt install python3 python3-pip
+sudo apt install -y python3 python3-pip python3-matplotlib
 ```
 
 ---
 
-## Compilación del proyecto
+## Build
 
-El proyecto está preparado para compilarse en **Release**.
+The project is prepared for **Release** builds.
 
-### Script recomendado
+### Recommended build command
 
 ```bash
 sudo ./build_release.sh
 ```
 
-### Compilación con distintos compiladores
+### Build only one compiler variant
 
-La línea experimental actual contempla compilar y probar esta implementación tanto con **G++** como con **Clang++**.
+```bash
+sudo ./build_release.sh gcc
+```
 
-El objetivo es generar dos conjuntos de ejecutables comparables:
+or:
 
-- una versión compilada con **G++**;
-- una versión compilada con **Clang++**.
+```bash
+sudo ./build_release.sh clang
+```
 
-De este modo, cada campaña podrá repetirse con ambos compiladores sin cambiar el código fuente, aislando el efecto del compilador dentro del estudio.
+### What the build script generates
 
----
+For each compiler, the build script generates:
 
-## Tipos de prueba
-
-### Prueba individual
-
-Consiste en ejecutar un único proceso `bench_tcp` para medir de forma controlada la descarga completa del fichero servido por el servidor.
-
-### Campaña concurrente
-
-Consiste en lanzar varios procesos `bench_tcp` en paralelo, simulando múltiples clientes atacando al mismo fichero al mismo tiempo.
-
-Ejemplos de campañas posibles:
-
-- 1 proceso `bench_tcp`
-- 2 procesos `bench_tcp`
-- 4 procesos `bench_tcp`
-- 8 procesos `bench_tcp`
-- 16 procesos `bench_tcp`
-
-Este enfoque permite medir:
-
-- tiempo total de campaña;
-- consumo energético;
-- comportamiento bajo concurrencia;
-- escalabilidad del servidor.
-
-### Campaña por compilador
-
-Además de la dimensión de concurrencia, las pruebas pueden repetirse para dos familias de binarios:
-
-- binarios compilados con **G++**;
-- binarios compilados con **Clang++**.
-
-Esto permite observar si existen diferencias relevantes en:
-
-- coste temporal de la implementación;
-- throughput;
-- escalabilidad;
-- eficiencia energética;
-- estabilidad de las mediciones.
+- `build-*/tcpserver/tcpserver`
+- `build-*/tcpclient/tcpclient`
+- `build-*/benchmarks/bench_tcp`
 
 ---
 
-## Ejecución
+## Execution
 
-### Compilar
+### Build everything
 
 ```bash
 sudo ./build_release.sh
 ```
 
-### Lanzar el servidor manualmente
+### Start the server manually
 
 ```bash
-./build/tcpserver/tcpserver ./archivo.txt 8080
+sudo ./build-gcc/tcpserver/tcpserver ../files/100MB.bin 8080 1
 ```
 
-### Lanzar una prueba individual
+Example with Clang build:
 
 ```bash
-./build/benchmarks/bench_tcp   --benchmark_min_time=1s   --benchmark_repetitions=1   --benchmark_out=results/micro.json   --benchmark_out_format=json
+sudo ./build-clang/tcpserver/tcpserver ../files/100MB.bin 8081 2
 ```
 
-### Lanzar la campaña automática
+### Start the client manually
+
+```bash
+sudo ./build-gcc/tcpclient/tcpclient 127.0.0.1 8080 downloaded.bin
+```
+
+### Run one benchmark manually
+
+```bash
+sudo ./build-gcc/benchmarks/bench_tcp \
+  --server_port=8080 \
+  --benchmark_out=results/raw/micro_manual.json \
+  --benchmark_out_format=json
+```
+
+### Run the automated benchmark campaign
 
 ```bash
 sudo python3 scripts/run_bench.py
 ```
 
-o:
+or:
 
 ```bash
 sudo ./scripts/run_bench.py
@@ -294,98 +287,158 @@ sudo ./scripts/run_bench.py
 
 ---
 
-## Resultados generados
+## Benchmark campaign model
 
-En las pruebas individuales, Google Benchmark produce resultados con:
+### Single-case execution
 
-- tiempo real;
-- tiempo de CPU;
-- número de iteraciones;
-- repeticiones;
-- agregados como media, mediana, desviación estándar y coeficiente de variación.
+A single benchmark case consists of:
 
-En las campañas concurrentes, el script añade además:
+- one server configuration;
+- one number of parallel benchmark client processes;
+- several repetitions of that same case.
 
-- tiempo total de campaña;
-- energía consumida;
-- número de procesos lanzados;
-- iteraciones válidas;
-- bytes transferidos;
-- throughput agregado.
+### Concurrent campaign
 
-En la extensión por compilador, los resultados deberán poder distinguir también:
+A concurrent campaign launches multiple `bench_tcp` processes in parallel, for example:
 
-- compilador utilizado;
-- binario ejecutado;
-- comparabilidad entre resultados equivalentes generados con **G++** y **Clang++**.
+- 1 parallel benchmark process
+- 2 parallel benchmark processes
+- 4 parallel benchmark processes
+- 8 parallel benchmark processes
+- 16 parallel benchmark processes
 
----
+### Compiler comparison
 
-## Script de automatización
+The same campaign can be repeated with:
 
-### Ruta
+- binaries built with **G++**;
+- binaries built with **Clang++**.
 
-```text
-scripts/run_bench.py
-```
+This makes it possible to compare:
 
-### Qué hace
-
-El script:
-
-1. arranca el servidor;
-2. espera a que quede realmente listo;
-3. mide energía inicial;
-4. lanza una campaña de benchmark;
-5. mide energía final;
-6. valida y procesa los ficheros `micro_*.json`;
-7. genera `results/macro_bench_results.json`.
-
-En su evolución natural dentro de este proyecto, el script podrá ejecutarse también separando campañas por compilador para comparar de forma sistemática los binarios generados con **G++** y **Clang++**.
+- execution time;
+- throughput;
+- net energy consumption;
+- stability of repeated runs.
 
 ---
 
-## Ajustes recomendados para medir bien
+## Output files
 
-### Fijar governor
+### Raw benchmark JSON files
+
+Located under `results/raw/`:
+
+- `micro_*.json`
+- `macro_bench_results.json`
+- `macro_bench_summary.json`
+- `macro_bench_results.csv`
+
+### Plots
+
+Located under `results/plots/`.
+
+These typically include:
+
+- execution time plots;
+- raw energy plots;
+- net energy plots;
+- throughput plots;
+- per-process completion plots;
+- GCC vs Clang comparison plots.
+
+### Reports
+
+Located under `results/reports/`.
+
+Depending on the current reporting configuration, this may include:
+
+- a main PDF report without raw tables;
+- a main PDF report with raw tables;
+- a compiler-comparison PDF without raw tables;
+- a compiler-comparison PDF with raw tables.
+
+### Logs
+
+Located under `results/logs/`.
+
+These include:
+
+- server stdout/stderr logs;
+- benchmark stderr logs.
+
+---
+
+## Included metrics
+
+The reporting pipeline can include:
+
+- total execution time;
+- raw energy consumption;
+- estimated idle energy;
+- net energy consumption;
+- aggregate throughput;
+- completed downloads per benchmark process;
+- total successful iterations;
+- failed processes.
+
+---
+
+## Included statistics
+
+For each case, the reporting pipeline can compute:
+
+- count;
+- mean;
+- median;
+- standard deviation;
+- percentile 25;
+- percentile 50;
+- percentile 95;
+- minimum;
+- maximum.
+
+---
+
+## Measurement recommendations
+
+For more stable and scientifically cleaner runs:
 
 ```bash
 sudo cpupower frequency-set -g performance
 ```
 
-### Otras recomendaciones
+Additional recommendations:
 
-- compilar siempre en `Release`;
-- evitar `Debug`;
-- repetir el mismo caso con **G++** y **Clang++** bajo las mismas condiciones;
-- cerrar programas pesados;
-- repetir experimentos varias veces;
-- controlar temperatura inicial;
-- evitar ruido térmico y de frecuencia.
-
----
-
-## Ficheros de salida
-
-### `results/micro_*.json`
-
-Contienen la salida de Google Benchmark en JSON para cada proceso `bench_tcp` ejecutado durante la campaña.
-
-### `results/macro_bench_results.json`
-
-Contiene un resumen procesado con:
-
-- tiempo total de campaña;
-- energía total consumida;
-- procesos válidos y fallidos;
-- iteraciones válidas;
-- bytes transferidos;
-- throughput agregado.
-
-En la fase comparativa por compilador, conviene que estos resultados puedan asociarse también al compilador con el que se generó cada ejecutable.
+- always build in **Release** mode;
+- avoid running heavy background tasks;
+- keep the machine thermally stable before long campaigns;
+- repeat each case multiple times;
+- keep the same methodology across GCC and Clang;
+- use the same served file for all comparable runs.
 
 ---
 
-## Autor
+## Notes on the current BSD sockets design
+
+This current BSD sockets implementation is intentionally aligned with the simplified raw-byte transport model:
+
+- no filename header;
+- no file-size header;
+- no extra application protocol;
+- transfer ends when the server closes the connection.
+
+This makes it much closer to the simplified transport logic used in the corresponding Corosio version, while preserving the particularities of a BSD sockets + `poll()` implementation.
+
+For the current server implementation:
+
+- file data is exposed through a read-only memory mapping;
+- receive buffers use fixed-size stack storage where appropriate;
+- worker-side client tracking avoids high-level abstractions as much as possible;
+- concurrency is implemented with plain OS threads rather than coroutines.
+
+---
+
+## Author
 
 **José Antonio García Montañez**

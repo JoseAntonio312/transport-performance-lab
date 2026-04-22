@@ -2,126 +2,109 @@
  * Copyright (c) 2026 José Antonio García Montañez
  *
  * TCP file server with Corosio
- * Minimal output version for performance and energy measurements.
+ * Minimal raw-byte server for performance and energy measurements.
+ *
  */
 
 #include <csignal>
-
-#include <boost/corosio.hpp>
-#include <boost/capy/buffers.hpp>
-#include <boost/capy/task.hpp>
-#include <boost/capy/ex/run_async.hpp>
-
-#include <arpa/inet.h>
-
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
 
-// Alias std::filesystem
+#include <boost/capy/buffers.hpp>
+#include <boost/capy/ex/run_async.hpp>
+#include <boost/capy/task.hpp>
+#include <boost/corosio.hpp>
+
 namespace fs = std::filesystem;
 namespace corosio = boost::corosio;
 namespace capy = boost::capy;
 
-// Puerto por defecto
+// Default TCP listening port.
 constexpr int DEFAULT_PORT = 8080;
 
-// Conexiones tope
+// Maximum number of pending connections in the listen queue.
 constexpr int BACKLOG = 128;
 
-// Estructura estado cliente
-struct ClientState {
-    std::size_t sent = 0; // sent bytes
+// Maximum supported file size in memory.
+// Increased to 2 GiB to allow large benchmark files.
+constexpr std::uint64_t MAX_FILE_SIZE = 2ull * 1024ull * 1024ull * 1024ull;
+
+// Heap-backed in-memory file storage.
+// This avoids putting very large buffers on the stack.
+struct FileBuffer {
+    std::unique_ptr<char[]> data;
+    std::size_t valid_size = 0;
 };
 
-// Manejo de la arquitectura de red
-static void append_u32(std::vector<char>& buffer, std::uint32_t value) {
-    std::uint32_t net = htonl(value);
-    const char* p = reinterpret_cast<const char*>(&net);
-    buffer.insert(buffer.end(), p, p + sizeof(net));
-}
+// Load the whole file into memory before starting the server.
+// This removes disk I/O from the measured serving phase.
+static FileBuffer load_file_into_memory(const fs::path& path) {
+    const std::uint64_t file_size_u64 = fs::file_size(path);
 
-// Añadir un uint64_t al buffer en formato de red
-static void append_u64(std::vector<char>& buffer, std::uint64_t value) {
-    std::uint32_t high = htonl(static_cast<std::uint32_t>(value >> 32));
-    std::uint32_t low  = htonl(static_cast<std::uint32_t>(value & 0xFFFFFFFFULL));
+    if (file_size_u64 > MAX_FILE_SIZE) {
+        throw std::runtime_error("File is larger than MAX_FILE_SIZE.");
+    }
 
-    const char* p1 = reinterpret_cast<const char*>(&high);
-    const char* p2 = reinterpret_cast<const char*>(&low);
+    const std::size_t file_size = static_cast<std::size_t>(file_size_u64);
 
-    buffer.insert(buffer.end(), p1, p1 + sizeof(high));
-    buffer.insert(buffer.end(), p2, p2 + sizeof(low));
-}
-
-// Cargar el fichero completo en memoria
-static std::vector<char> load_file(const fs::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        throw std::runtime_error("No se pudo abrir el fichero: " + path.string());
+        throw std::runtime_error("Failed to open file: " + path.string());
     }
 
-    file.seekg(0, std::ios::end);
-    std::streamsize size = file.tellg();
-    file.seekg(0, std::ios::beg);
+    FileBuffer file_buffer;
+    file_buffer.valid_size = file_size;
 
-    if (size < 0) {
-        throw std::runtime_error("No se pudo obtener el tamano del fichero.");
+    if (file_size > 0) {
+        file_buffer.data = std::make_unique<char[]>(file_size);
+
+        file.read(file_buffer.data.get(), static_cast<std::streamsize>(file_size));
+        if (!file) {
+            throw std::runtime_error("Failed to read file contents.");
+        }
     }
 
-    std::vector<char> data(static_cast<std::size_t>(size));
-
-    if (size > 0 && !file.read(data.data(), size)) {
-        throw std::runtime_error("Error leyendo el fichero.");
-    }
-
-    return data;
+    return file_buffer;
 }
 
-// Construcción de nuestro paquete
-// Formato:
-// [u32 tam_nombre][nombre][u64 tam_fichero][datos]
-static std::vector<char> build_packet(const std::string& filename,
-                                      const std::vector<char>& file_data) {
-    std::vector<char> packet;
-    packet.reserve(sizeof(std::uint32_t) + filename.size() +
-                   sizeof(std::uint64_t) + file_data.size());
+// Send the whole in-memory file to one client.
+// The function keeps writing until all bytes are sent or the socket fails.
+static capy::task<void> serve_client(
+    corosio::tcp_socket sock,
+    std::span<const char> file_view
+) {
+    std::size_t sent = 0;
 
-    append_u32(packet, static_cast<std::uint32_t>(filename.size()));
-    packet.insert(packet.end(), filename.begin(), filename.end());
-
-    append_u64(packet, static_cast<std::uint64_t>(file_data.size()));
-    packet.insert(packet.end(), file_data.begin(), file_data.end());
-
-    return packet;
-}
-
-static capy::task<void> serve_client(corosio::tcp_socket sock,
-                                     const std::vector<char>& packet) {
-    ClientState client;
-
-    while (client.sent < packet.size()) {
+    while (sent < file_view.size()) {
         auto [ec, n] = co_await sock.write_some(
-            capy::const_buffer(packet.data() + client.sent,
-                               packet.size() - client.sent));
+            capy::const_buffer(file_view.data() + sent, file_view.size() - sent)
+        );
 
         if (ec || n == 0) {
             break;
         }
 
-        client.sent += static_cast<std::size_t>(n);
+        sent += static_cast<std::size_t>(n);
     }
 
     sock.close();
     co_return;
 }
 
-static capy::task<void> accept_loop(corosio::io_context& ctx,
-                                    corosio::tcp_acceptor& acceptor,
-                                    const std::vector<char>& packet) {
+// Accept connections forever and spawn one coroutine per accepted client.
+static capy::task<void> accept_loop(
+    corosio::io_context& ctx,
+    corosio::tcp_acceptor& acceptor,
+    std::span<const char> file_view
+) {
     while (true) {
         corosio::tcp_socket sock(ctx);
         auto [ec] = co_await acceptor.accept(sock);
@@ -131,7 +114,7 @@ static capy::task<void> accept_loop(corosio::io_context& ctx,
         }
 
         capy::run_async(ctx.get_executor())(
-            serve_client(std::move(sock), packet)
+            serve_client(std::move(sock), file_view)
         );
     }
 }
@@ -139,9 +122,8 @@ static capy::task<void> accept_loop(corosio::io_context& ctx,
 int main(int argc, char* argv[]) {
     std::signal(SIGPIPE, SIG_IGN);
 
-    // Check args
     if (argc < 2 || argc > 4) {
-        std::cerr << "Uso: " << argv[0] << " <ruta_fichero> [puerto] [num_hebras]\n";
+        std::cerr << "Usage: " << argv[0] << " <file_path> [port] [threads]\n";
         return 1;
     }
 
@@ -152,7 +134,7 @@ int main(int argc, char* argv[]) {
     if (argc >= 3) {
         port = std::stoi(argv[2]);
         if (port <= 0 || port > 65535) {
-            std::cerr << "Puerto invalido.\n";
+            std::cerr << "Invalid port.\n";
             return 1;
         }
     }
@@ -160,65 +142,71 @@ int main(int argc, char* argv[]) {
     if (argc == 4) {
         threads = std::stoi(argv[3]);
         if (threads <= 0) {
-            std::cerr << "Numero de hebras invalido.\n";
+            std::cerr << "Invalid thread count.\n";
             return 1;
         }
     }
 
     if (!fs::exists(file_path) || !fs::is_regular_file(file_path)) {
-        std::cerr << "El fichero no existe o no es regular: " << file_path << "\n";
+        std::cerr << "Input path is not a regular file: " << file_path << "\n";
         return 1;
     }
 
-    std::vector<char> file_data;
+    FileBuffer file_buffer;
     try {
-        file_data = load_file(file_path);
+        file_buffer = load_file_into_memory(file_path);
     } catch (const std::exception& e) {
-        std::cerr << e.what() << "\n";
+        std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
 
-    const std::string filename = file_path.filename().string();
-    const std::vector<char> packet = build_packet(filename, file_data);
-
-    corosio::io_context ctx;
-    corosio::tcp_acceptor acceptor(ctx);
-
-    acceptor.open(corosio::tcp::v4());
-
-    auto bind_ec = acceptor.bind(corosio::endpoint(static_cast<std::uint16_t>(port)));
-    if (bind_ec) {
-        std::cerr << "bind: " << bind_ec.message() << "\n";
-        return 1;
-    }
-
-    auto listen_ec = acceptor.listen(BACKLOG);
-    if (listen_ec) {
-        std::cerr << "listen: " << listen_ec.message() << "\n";
-        return 1;
-    }
-
-    std::cout << "Server ready on port " << port
-              << " with " << threads << " threads\n";
-
-    capy::run_async(ctx.get_executor())(
-        accept_loop(ctx, acceptor, packet)
+    const std::span<const char> file_view(
+        file_buffer.valid_size > 0 ? file_buffer.data.get() : nullptr,
+        file_buffer.valid_size
     );
 
-    std::vector<std::thread> pool;
-    pool.reserve(static_cast<std::size_t>(threads > 1 ? threads - 1 : 0));
+    try {
+        corosio::io_context ctx;
+        corosio::tcp_acceptor acceptor(ctx);
 
-    for (int i = 1; i < threads; ++i) {
-        pool.emplace_back([&ctx]() {
-            ctx.run();
-        });
+        acceptor.open(corosio::tcp::v4());
+
+        auto bind_ec = acceptor.bind(corosio::endpoint(static_cast<std::uint16_t>(port)));
+        if (bind_ec) {
+            std::cerr << "bind: " << bind_ec.message() << "\n";
+            return 1;
+        }
+
+        auto listen_ec = acceptor.listen(BACKLOG);
+        if (listen_ec) {
+            std::cerr << "listen: " << listen_ec.message() << "\n";
+            return 1;
+        }
+
+        capy::run_async(ctx.get_executor())(
+            accept_loop(ctx, acceptor, file_view)
+        );
+
+        // Run the same io_context on N worker threads.
+        // Each thread calls ctx.run(), so all of them participate in executing
+        // the accept loop and the per-client send coroutines.
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<std::size_t>(threads));
+
+        for (int i = 0; i < threads; ++i) {
+            pool.emplace_back([&ctx]() {
+                ctx.run();
+            });
+        }
+
+        for (auto& worker : pool) {
+            worker.join();
+        }
+
+        return 0;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
     }
-
-    ctx.run();
-
-    for (auto& t : pool) {
-        t.join();
-    }
-
-    return 0;
 }

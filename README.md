@@ -1,186 +1,291 @@
-# TFM-Repo - Automatizacion global de compilacion y ejecucion
+# TFM-Repo - Global Build and Benchmark Automation
 
-Este repositorio agrupa distintas implementaciones experimentales de transferencia de ficheros sobre varias capas de transporte en **C++23**, con el objetivo de comparar su comportamiento en términos de:
+This repository groups several experimental file-transfer implementations in **C++23**. The goal is to compare them under a common methodology in terms of:
 
-- tiempo;
-- escalabilidad;
-- throughput;
-- consumo energético;
-- comportamiento bajo concurrencia;
-- diferencias entre compiladores;
-- diferencias entre configuraciones monohilo y multihebra.
+- execution time
+- scalability
+- throughput
+- energy consumption
+- behavior under concurrency
+- compiler-dependent differences
+- single-threaded and multi-threaded server configurations
 
-Cada subproyecto representa una capa de transporte distinta y mantiene su propia implementación de:
+Each transport subproject contains its own implementation of:
 
-- servidor TCP;
-- cliente TCP;
-- benchmark con Google Benchmark;
-- scripts de automatización;
-- README específico.
+- a TCP server
+- a TCP client
+- a Google Benchmark-based benchmark binary
+- local automation scripts
+- a project-specific `README.md`
 
-Además de esos `README.md` individuales, en la raíz del repositorio se incluyen scripts globales para facilitar campañas completas de compilación y ejecución desde un único punto.
+In addition to those per-project READMEs, the repository root provides **global automation scripts** to build and run the whole benchmark suite from one place.
 
 ---
 
-## Estructura general del repositorio
+## Repository overview
 
-El repositorio agrupa varios subproyectos de benchmarking y transporte. Entre ellos, por ejemplo:
+The repository is organized as a collection of transport-specific benchmark projects, for example:
 
 - `asio-standalone`
-- `bechmark_taps`
-- `becnhmark_async_berkeley`
+- `benchmark_taps`
+- `benchmark_async_berkeley`
 - `boost-asio`
 - `bsd-sockets`
 - `corosio`
 
-Cada uno de ellos puede tener:
+Each subproject may contain:
 
-- su propio `build_release.sh`;
-- su propio `scripts/run_bench.py`;
-- su propia carpeta `results/`;
-- su propia lógica de compilación y ejecución.
+- its own `build_release.sh`
+- its own `scripts/run_bench.py`
+- its own `results/` directory
+- its own compiler and dependency configuration
 
-La idea de los scripts globales es **coordinar todos esos proyectos**, sin duplicar la lógica interna de cada uno.
-
----
-
-## Objetivo de los scripts globales
-
-En la raíz del repositorio puedes tener dos scripts principales:
-
-- `build_all_transports.sh`: compila todos los proyectos de transporte usando el `build_release.sh` propio de cada subproyecto.
-- `run_all_benchmarks.sh`: ejecuta todos los `scripts/run_bench.py` disponibles en los subproyectos.
-
-Con esto se consigue:
-
-- lanzar compilaciones masivas desde un único punto;
-- ejecutar campañas completas de benchmarking sin entrar proyecto por proyecto;
-- mantener encapsulada la lógica específica dentro de cada implementación;
-- facilitar la automatización del trabajo experimental del TFM.
+The global scripts do **not** replace that internal logic. They coordinate it.
 
 ---
 
-## Proyectos contemplados
+## Purpose of the global scripts
 
-Los scripts globales están preparados para recorrer estos directorios si existen:
+At repository root, the workflow is centered around two scripts:
+
+- `build.sh`: builds every transport project by delegating to each subproject's own `build_release.sh`
+- `run.sh`: runs every benchmark campaign by delegating to each subproject's own `scripts/run_bench.py`
+
+This makes it possible to:
+
+- launch large build campaigns from one entry point
+- run the full benchmark suite without entering each subproject manually
+- preserve the internal build and run logic of each transport implementation
+- automate the full thesis benchmarking workflow at repository level
+
+---
+
+## Expected subprojects
+
+The global scripts are designed to iterate over these directories when present:
 
 - `asio-standalone`
-- `bechmark_taps`
-- `becnhmark_async_berkeley`
+- `benchmark_taps`
+- `benchmark_async_berkeley`
 - `boost-asio`
 - `bsd-sockets`
 - `corosio`
 
-Si alguno de ellos no existe, o no contiene el script esperado, simplemente se omite y se informa por pantalla.
+If a directory does not exist, or if the expected script is missing, it is skipped and reported.
 
 ---
 
-## Script global de compilación
+## Global build script
 
-### Nombre
+### Name
 
 ```bash
-./build.sh
+sudo ./build.sh
 ```
 
-### Qué hace
+### What it does
 
-Este script:
+The global build script:
 
-- comprueba que se está ejecutando desde la raíz del repositorio;
-- intenta asegurar que `python3-matplotlib` esté disponible;
-- entra en cada subproyecto contemplado;
-- ejecuta su `build_release.sh` si existe;
-- muestra por pantalla el progreso de la compilación global.
+- assumes it is executed from the repository root
+- checks that the basic required tools are available
+- ensures Python dependencies needed by the reporting pipeline are installed
+- enters each transport subproject
+- runs its `build_release.sh` if present
+- reports progress for the global build process
 
-La filosofía es que cada subproyecto siga decidiendo:
+Each subproject remains fully responsible for:
 
-- cómo se compila;
-- con qué compiladores;
-- qué flags usa;
-- qué dependencias necesita.
+- how it is compiled
+- which compilers it uses
+- which flags it enables
+- which external libraries it requires
+- how special cases such as TAPS or async-berkeley are resolved
 
-El script global solo actúa como coordinador.
+The root-level build script only acts as a coordinator.
 
 ---
 
-## Instalación automática de matplotlib
+## Python dependencies used by the global workflow
 
-El script global de compilación intenta instalar `python3-matplotlib` automáticamente si no está disponible, ya que algunos scripts de benchmarking generan gráficas al finalizar las campañas.
+Some benchmark pipelines generate figures and merged PDF reports. For that reason, the global build script may ensure the following Python packages are available:
 
-Orden de prioridad del intento de instalación:
+- `matplotlib`
+- `pypdf`
 
-1. `apt-get` con privilegios de administrador;
-2. si no existe `apt-get`, intento con `python3 -m pip install matplotlib`.
+### Installation strategy
 
-En Ubuntu, lo normal es que se instale mediante:
+The script attempts to install missing dependencies in this order:
 
-```bash
-sudo apt-get update
-sudo apt-get install -y python3-matplotlib
-```
+1. system packages with `apt-get`
+2. fallback installation with `python3 -m pip install --user`
 
----
-
-## Instalación automática de pypdf
-
-El script global de compilación o ejecución puede necesitar `pypdf` automáticamente si no está disponible, ya que se utiliza para fusionar los informes PDF generados por cada librería en un único documento final comparativo.
-
-Orden de prioridad del intento de instalación:
-
-1. `apt-get` con privilegios de administrador;
-2. si no existe `apt-get`, intento con `python3 -m pip install pypdf`.
-
-En Ubuntu, lo normal es que se instale mediante:
+Typical Ubuntu commands are:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3-pypdf
+sudo apt-get install -y python3-matplotlib python3-pypdf python3-pip
 ```
 
 ---
 
-## Script global de ejecución de benchmarks
+## Global benchmark execution script
 
-### Nombre
+### Name
 
 ```bash
 sudo ./run.sh
 ```
 
-### Qué hace
+### What it does
 
-Este script:
+The global run script:
 
-- entra en cada subproyecto contemplado;
-- busca su `scripts/run_bench.py`;
-- ejecuta la campaña correspondiente si existe;
-- deja que cada proyecto genere sus propios resultados, logs, JSON, CSV y gráficas según su configuración interna.
+- enters each configured subproject
+- looks for its `scripts/run_bench.py`
+- launches the benchmark campaign if the script exists
+- lets each project generate its own raw data, summaries, CSV files, plots, and PDF reports
+- collects the resulting artifacts into a global results tree
+- builds a repository-wide master summary
+- optionally merges categorized PDF reports
 
-De nuevo, el control detallado sigue residiendo en cada subproyecto.
+This means the detailed benchmark behavior still belongs to each individual subproject, while the root script provides a unified orchestration layer.
 
 ---
 
-## Flujo recomendado de trabajo
+## Recommended workflow
 
-Desde la raíz del repositorio:
+From repository root:
 
 ```bash
 sudo ./build.sh
 sudo ./run.sh
 ```
 
-Con este flujo:
+With this workflow:
 
-1. se compilan todas las implementaciones disponibles;
-2. se lanzan todas las campañas configuradas;
-3. cada subproyecto guarda sus resultados en su propia carpeta `results/`.
+1. all available implementations are built
+2. all configured benchmark campaigns are executed
+3. each subproject produces its own local results
+4. the repository root collects those results into a unified global structure
+5. cross-library comparisons become easier to inspect
 
 ---
 
-## Permisos
+## Global results layout
 
-Si al copiarlos a la raíz no tienen permiso de ejecución:
+The current root-level automation is intended to store consolidated outputs under a structure like:
+
+```text
+global_results/
+├── raw/
+├── summaries/
+├── csv/
+├── reports/
+│   ├── main_with_raw/
+│   ├── main_without_raw/
+│   ├── comparison_with_raw/
+│   ├── comparison_without_raw/
+│   ├── per_library/
+│   └── merged/
+├── plots/
+├── per_project/
+├── logs/
+└── manifests/
+```
+
+### Meaning of the main folders
+
+- `raw/`: collected raw JSON data from all subprojects
+- `summaries/`: collected per-library summary JSON files plus the global master summary
+- `csv/`: collected per-library CSV files plus the global master CSV
+- `reports/`: categorized PDF reports produced by each transport implementation
+- `plots/`: copied plot outputs from individual projects when available
+- `per_project/`: a clean per-library mirror of collected outputs
+- `logs/`: global orchestration logs
+- `manifests/`: run configuration and execution metadata
+
+This structure is meant to make the full campaign easier to inspect globally, while still preserving per-project separation.
+
+---
+
+## Global master summary
+
+After the full execution, the repository-level workflow can generate a consolidated master table from the collected `*_summary.json` files.
+
+Typical outputs:
+
+- `global_results/summaries/master_summary.json`
+- `global_results/csv/master_summary.csv`
+
+These master files are intended to support comparison across:
+
+- libraries
+- compilers
+- server thread counts
+- numbers of parallel benchmark clients
+
+They can also be extended to derive higher-level metrics such as:
+
+- throughput per joule
+- best library per case
+- average behavior by library
+- per-case winners for latency, energy, throughput, or efficiency
+
+---
+
+## Merged global reports
+
+The global PDF merge step can combine categorized PDF reports into grouped outputs, for example:
+
+- merged main reports with raw tables
+- merged main reports without raw tables
+- merged comparison reports with raw tables
+- merged comparison reports without raw tables
+- one combined global PDF containing all available report categories
+
+This makes the final inspection of results much easier than opening each project report manually.
+
+---
+
+## Cooldown, cache trashing, and warmup phases
+
+The global run script may expose environment-controlled behavior such as:
+
+- cooldown before each project
+- cooldown after each project
+- best-effort cache trashing
+- optional warmup phase
+- optional randomized project order
+- optional idle measurement at the beginning
+
+This is useful when trying to reduce cross-project interference and improve the consistency of the measurements.
+
+Examples of environment variables that may be supported:
+
+```bash
+SETTLE_SECONDS_BEFORE=20
+SETTLE_SECONDS_AFTER=20
+WARMUP_ENABLED=1
+WARMUP_PROJECTS=1
+CACHE_TRASH_ENABLED=1
+CACHE_TRASH_SIZE_MB=2048
+RANDOMIZE_ORDER=0
+MERGE_PDFS_AT_END=1
+MEASURE_IDLE_AT_START=1
+```
+
+A typical usage pattern is:
+
+```bash
+sudo SETTLE_SECONDS_BEFORE=20 SETTLE_SECONDS_AFTER=20 ./run.sh
+```
+
+---
+
+## Permissions
+
+If the root scripts do not have execution permissions:
 
 ```bash
 chmod +x build.sh
@@ -189,23 +294,30 @@ chmod +x run.sh
 
 ---
 
-## Relación con los README individuales
+## Relationship with the per-project READMEs
 
-Este README **no sustituye** a los `README.md` específicos de cada implementación.
+This root README does **not** replace the `README.md` file inside each transport implementation.
 
-Su función es complementar la documentación existente y explicar:
+Its role is to complement them by explaining:
 
-- cómo compilar todos los proyectos desde la raíz;
-- cómo lanzar todas las campañas desde la raíz;
-- cómo entender el papel de los scripts globales dentro del repositorio.
+- how to build all projects from the repository root
+- how to run all benchmark campaigns from the repository root
+- how global result collection and cross-library comparison work
+- how the root-level scripts fit into the full thesis workflow
 
-Para detalles concretos de cada tecnología, deben consultarse sus respectivos `README.md`.
+For transport-specific details, the corresponding subproject README should always be consulted.
 
 ---
 
-## Notas finales
+## Notes
 
-- Cada subproyecto sigue controlando su propia configuración de compilador, puertos, hebras, benchmarks y resultados.
-- El script global solo coordina la ejecución general.
-- Si renombrases directorios del repositorio, tendrías que actualizar el array `PROJECT_DIRS` dentro de los scripts globales.
-- Esta organización permite mantener desacopladas las implementaciones concretas y, al mismo tiempo, automatizar el trabajo experimental a nivel de repositorio completo.
+- Each transport project still owns its own compiler setup, ports, server-thread settings, benchmark cases, and result-generation logic.
+- The global scripts only coordinate the complete repository-level workflow.
+- If project directories are renamed, the `PROJECT_DIRS` arrays in the root scripts must be updated accordingly.
+- This design keeps transport implementations decoupled while still enabling repository-wide automation and comparison.
+
+---
+
+## Author
+
+**José Antonio García Montañez**

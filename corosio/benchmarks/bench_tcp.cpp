@@ -1,168 +1,125 @@
 /*
  * Copyright (c) 2026 José Antonio García Montañez
  *
- * Corosio file download benchmark
- * Minimal output version for performance and future energy measurements.
+ * Corosio raw-byte file download benchmark
+ * Minimal benchmark version for performance and energy measurements.
+ *
  */
 
 #include <benchmark/benchmark.h>
 
-#include <boost/corosio.hpp>
-#include <boost/capy/task.hpp>
-#include <boost/capy/ex/run_async.hpp>
-#include <boost/capy/buffers.hpp>
-
-#include <arpa/inet.h>
-
+#include <array>
+#include <cstddef>
 #include <cstdint>
-#include <stdexcept>
 #include <string>
-#include <vector>
 
-// Puerto del servidor
-constexpr int DEFAULT_PORT = 8080;
+#include <boost/capy/buffers.hpp>
+#include <boost/capy/ex/run_async.hpp>
+#include <boost/capy/task.hpp>
+#include <boost/corosio.hpp>
 
 namespace corosio = boost::corosio;
 namespace capy = boost::capy;
 
-// Puerto global configurable
+// Default server port.
+constexpr int DEFAULT_PORT = 8080;
+
+// Fixed receive buffer size used by the benchmark client.
+constexpr std::size_t BUFFER_SIZE = 8192;
+
+// Global configurable port, optionally overridden with --server_port=...
 static int g_port = DEFAULT_PORT;
 
-// Conexion TCP basica
+// Connect the socket to the benchmark server.
+// Returns true on success, false on failure.
 static capy::task<bool> connect_tcp(corosio::tcp_socket& sock, const char* ip, int port) {
     sock.open();
 
-    const corosio::endpoint server_ep(
-        corosio::endpoint(ip),
-        static_cast<unsigned short>(port));
+    auto [ec] = co_await sock.connect(
+        corosio::endpoint(corosio::endpoint(ip), static_cast<unsigned short>(port))
+    );
 
-    auto [ec] = co_await sock.connect(server_ep);
     co_return !ec;
 }
 
-// Recibir exactamente N bytes
-static capy::task<bool> recv_exact(corosio::tcp_socket& sock, void* buffer, std::size_t total) {
-    char* ptr = static_cast<char*>(buffer);
-    std::size_t received = 0;
-
-    while (received < total) {
-        auto [ec, n] = co_await sock.read_some(
-            capy::mutable_buffer(ptr + received, total - received));
-
-        if (ec || n == 0) {
-            co_return false;
-        }
-
-        received += static_cast<std::size_t>(n);
-    }
-
-    co_return true;
-}
-
-// Lectura uint32_t en red
-static capy::task<std::uint32_t> read_u32(corosio::tcp_socket& sock) {
-    std::uint32_t net = 0;
-
-    if (!(co_await recv_exact(sock, &net, sizeof(net)))) {
-        throw std::runtime_error("Error leyendo uint32.");
-    }
-
-    co_return ntohl(net);
-}
-
-// Lectura uint64_t en red
-static capy::task<std::uint64_t> read_u64(corosio::tcp_socket& sock) {
-    std::uint32_t high_net = 0;
-    std::uint32_t low_net = 0;
-
-    if (!(co_await recv_exact(sock, &high_net, sizeof(high_net))) ||
-        !(co_await recv_exact(sock, &low_net, sizeof(low_net)))) {
-        throw std::runtime_error("Error leyendo uint64.");
-    }
-
-    std::uint64_t high = ntohl(high_net);
-    std::uint64_t low = ntohl(low_net);
-
-    co_return (high << 32) | low;
-}
-
-// Descarga completa del fichero servido
-static capy::task<bool> download_file(corosio::io_context& ioc,
-                                      const char* ip,
-                                      int port,
-                                      std::vector<char>& buffer) {
-    corosio::tcp_socket sock(ioc);
+// Download raw bytes until the peer closes the connection.
+// The function does not store the file permanently; it only drains the socket
+// into a fixed-size stack buffer so the benchmark measures network + runtime cost
+// without adding file-system write overhead.
+//
+// Returns true on success, false on failure.
+static capy::task<bool> download_stream(
+    corosio::io_context& ctx,
+    const char* ip,
+    int port,
+    std::array<char, BUFFER_SIZE>& buffer
+) {
+    corosio::tcp_socket sock(ctx);
 
     if (!(co_await connect_tcp(sock, ip, port))) {
         co_return false;
     }
 
-    try {
-        std::uint32_t filename_size = co_await read_u32(sock);
-        if (filename_size == 0 || filename_size > 4096) {
+    std::uint64_t total_bytes = 0;
+
+    while (true) {
+        auto [ec, n] = co_await sock.read_some(
+            capy::mutable_buffer(buffer.data(), buffer.size())
+        );
+
+        if (ec) {
             sock.close();
             co_return false;
         }
 
-        std::string filename(filename_size, '\0');
-        if (!(co_await recv_exact(sock, filename.data(), filename_size))) {
-            sock.close();
-            co_return false;
+        // EOF: the server finished sending the file and closed the connection.
+        if (n == 0) {
+            break;
         }
 
-        std::uint64_t file_size = co_await read_u64(sock);
-        std::uint64_t remaining = file_size;
+        total_bytes += static_cast<std::uint64_t>(n);
 
-        while (remaining > 0) {
-            std::size_t chunk = static_cast<std::size_t>(
-                remaining > buffer.size() ? buffer.size() : remaining
-            );
-
-            auto [ec, n] = co_await sock.read_some(
-                capy::mutable_buffer(buffer.data(), chunk));
-
-            if (ec || n == 0) {
-                sock.close();
-                co_return false;
-            }
-
-            remaining -= static_cast<std::uint64_t>(n);
-        }
-
+        // Prevent the compiler from treating the received data path as dead.
         benchmark::DoNotOptimize(buffer.data());
+        benchmark::DoNotOptimize(total_bytes);
         benchmark::ClobberMemory();
-
-        sock.close();
-        co_return true;
-
-    } catch (...) {
-        sock.close();
-        co_return false;
     }
+
+    sock.close();
+    co_return true;
 }
 
-// Benchmark de descarga del fichero servido
+// Google Benchmark entry point.
+// Each iteration performs one full file download from the server.
 static void BM_TCP_FileDownload(benchmark::State& state) {
     const char* ip = "127.0.0.1";
     const int port = g_port;
-    constexpr std::size_t BUFFER_SIZE = 8192;
-
-    std::vector<char> buffer(BUFFER_SIZE);
 
     for (auto _ : state) {
-        corosio::io_context ioc;
+        (void)_;
+
+        corosio::io_context ctx;
+        std::array<char, BUFFER_SIZE> buffer{};
         bool ok = false;
 
-        capy::run_async(ioc.get_executor())(
+        /*
+         * run_async needs a top-level coroutine to schedule on the executor.
+         *
+         * download_stream(...) returns capy::task<bool>, so this small wrapper
+         * coroutine exists only to co_await that task and store its boolean
+         * result into the local variable 'ok'.
+         */
+        capy::run_async(ctx.get_executor())(
             [&]() -> capy::task<void> {
-                ok = co_await download_file(ioc, ip, port, buffer);
+                ok = co_await download_stream(ctx, ip, port, buffer);
             }()
         );
 
-        ioc.run();
+        // Run the event loop until the scheduled asynchronous work completes.
+        ctx.run();
 
         if (!ok) {
-            state.SkipWithError("Error en descarga.");
+            state.SkipWithError("Download failed.");
             break;
         }
     }
@@ -174,27 +131,27 @@ BENCHMARK(BM_TCP_FileDownload)
     ->UseRealTime();
 
 int main(int argc, char** argv) {
-    std::vector<char*> filtered_argv;
-    filtered_argv.reserve(static_cast<std::size_t>(argc));
-    filtered_argv.push_back(argv[0]);
-
     const std::string prefix = "--server_port=";
 
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
+    // Filter our custom argument in-place so Google Benchmark only sees
+    // the arguments that belong to it.
+    int write_idx = 1;
+
+    for (int read_idx = 1; read_idx < argc; ++read_idx) {
+        const std::string arg = argv[read_idx];
 
         if (arg.rfind(prefix, 0) == 0) {
             g_port = std::stoi(arg.substr(prefix.size()));
         } else {
-            filtered_argv.push_back(argv[i]);
+            argv[write_idx++] = argv[read_idx];
         }
     }
 
-    int filtered_argc = static_cast<int>(filtered_argv.size());
-    filtered_argv.push_back(nullptr);
+    argc = write_idx;
+    argv[argc] = nullptr;
 
-    benchmark::Initialize(&filtered_argc, filtered_argv.data());
-    if (benchmark::ReportUnrecognizedArguments(filtered_argc, filtered_argv.data())) {
+    benchmark::Initialize(&argc, argv);
+    if (benchmark::ReportUnrecognizedArguments(argc, argv)) {
         return 1;
     }
 

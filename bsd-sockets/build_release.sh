@@ -17,23 +17,23 @@ build_one() {
         ;;
       clang)
         build_dir="build-clang"
-        compiler_label="CLANG"
+        compiler_label="Clang"
         c_compiler="clang"
         cxx_compiler="clang++"
         ;;
       *)
-        echo "Compilador no soportado: $compiler"
+        echo "Unsupported compiler: $compiler"
         exit 1
         ;;
     esac
 
     if ! command -v "$c_compiler" >/dev/null 2>&1; then
-        echo "Error: $c_compiler no esta instalado o no esta en PATH"
+        echo "Error: $c_compiler is not installed or not available in PATH"
         exit 1
     fi
 
     if ! command -v "$cxx_compiler" >/dev/null 2>&1; then
-        echo "Error: $cxx_compiler no esta instalado o no esta en PATH"
+        echo "Error: $cxx_compiler is not installed or not available in PATH"
         exit 1
     fi
 
@@ -47,8 +47,8 @@ build_one() {
     cmake --build "$build_dir" --config Release -j"$(nproc)"
 
     echo ""
-    echo "Compilacion BSD SOCKETS completada en modo Release con $compiler_label."
-    echo "Ejecutables:"
+    echo "BSD sockets build completed in Release mode with $compiler_label."
+    echo "Executables:"
     echo "  $build_dir/tcpserver/tcpserver"
     echo "  $build_dir/tcpclient/tcpclient"
     echo "  $build_dir/benchmarks/bench_tcp"
@@ -64,11 +64,11 @@ elif [ $# -eq 1 ]; then
         build_one "$1"
         ;;
       *)
-        echo "Uso: $0 [gcc|clang]"
+        echo "Usage: $0 [gcc|clang]"
         exit 1
         ;;
     esac
 else
-    echo "Uso: $0 [gcc|clang]"
+    echo "Usage: $0 [gcc|clang]"
     exit 1
 fi
