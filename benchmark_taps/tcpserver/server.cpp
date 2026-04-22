@@ -201,9 +201,6 @@ int main(int argc, char* argv[]) {
             asio::detached
         );
 
-        std::cout << "Server ready on port " << port
-                  << " with " << threads << " threads\n";
-
         std::vector<std::thread> pool;
         pool.reserve(static_cast<std::size_t>(threads > 1 ? threads - 1 : 0));
 

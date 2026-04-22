@@ -1,5 +1,5 @@
 ==== BENCHMARK SYSTEM INFO ====
-Timestamp: 2026-04-22 16:55:58
+Timestamp: 2026-04-22 18:06:30
 
 ==== uname -a ====
 Linux jagarcia-B650-AORUS-ELITE-AX 6.17.0-20-generic #20~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Thu Mar 19 01:28:37 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
@@ -38,7 +38,7 @@ Núcleo(s) por «socket»:                   8
 «Socket(s)»:                              1
 Revisión:                                 2
 Aumento de frecuencia:                    activada
-CPU(s) factor de escala MHz:              75%
+CPU(s) factor de escala MHz:              74%
 CPU MHz máx.:                             5392,8721
 CPU MHz mín.:                             422,3340
 BogoMIPS:                                 7585,28
@@ -72,7 +72,7 @@ Vulnerabilidad Vmscape:                   Mitigation; IBPB before exit to usersp
 
 ==== free -h ====
                total       usado       libre  compartido   búf/caché  disponible
-Mem:            30Gi       3,2Gi        25Gi       118Mi       1,6Gi        27Gi
+Mem:            30Gi       2,0Gi        27Gi        44Mi       1,6Gi        28Gi
 Inter:         8,0Gi          0B       8,0Gi
 
 ==== lsblk ====

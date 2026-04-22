@@ -8,23 +8,23 @@ RAW_DIR="$GLOBAL_RESULTS_DIR/raw"
 SUMMARIES_DIR="$GLOBAL_RESULTS_DIR/summaries"
 CSV_DIR="$GLOBAL_RESULTS_DIR/csv"
 REPORTS_DIR="$GLOBAL_RESULTS_DIR/reports"
-REPORTS_GLOBAL_DIR="$REPORTS_DIR/global"
 REPORTS_MAIN_WITH_RAW_DIR="$REPORTS_DIR/main_with_raw"
 REPORTS_MAIN_WITHOUT_RAW_DIR="$REPORTS_DIR/main_without_raw"
 REPORTS_COMPARISON_WITH_RAW_DIR="$REPORTS_DIR/comparison_with_raw"
 REPORTS_COMPARISON_WITHOUT_RAW_DIR="$REPORTS_DIR/comparison_without_raw"
 REPORTS_PER_LIBRARY_DIR="$REPORTS_DIR/per_library"
 MERGED_REPORTS_DIR="$REPORTS_DIR/merged"
+GLOBAL_REPORTS_DIR="$REPORTS_DIR/global"
 
 PLOTS_DIR="$GLOBAL_RESULTS_DIR/plots"
-PLOTS_GLOBAL_DIR="$PLOTS_DIR/global"
+GLOBAL_PLOTS_DIR="$PLOTS_DIR/global"
 PER_PROJECT_DIR="$GLOBAL_RESULTS_DIR/per_project"
 LOGS_DIR="$GLOBAL_RESULTS_DIR/logs"
 MANIFESTS_DIR="$GLOBAL_RESULTS_DIR/manifests"
 
 MASTER_JSON="$SUMMARIES_DIR/master_summary.json"
 MASTER_CSV="$CSV_DIR/master_summary.csv"
-MASTER_PDF="$REPORTS_GLOBAL_DIR/global_master_comparison_report.pdf"
+MASTER_PDF="$GLOBAL_REPORTS_DIR/global_master_comparison_report.pdf"
 
 SYSTEM_INFO_TXT="$GLOBAL_RESULTS_DIR/system_info.txt"
 RUN_LOG="$LOGS_DIR/run_log.txt"
@@ -65,15 +65,15 @@ prepare_dirs() {
     "$SUMMARIES_DIR" \
     "$CSV_DIR" \
     "$REPORTS_DIR" \
-    "$REPORTS_GLOBAL_DIR" \
     "$REPORTS_MAIN_WITH_RAW_DIR" \
     "$REPORTS_MAIN_WITHOUT_RAW_DIR" \
     "$REPORTS_COMPARISON_WITH_RAW_DIR" \
     "$REPORTS_COMPARISON_WITHOUT_RAW_DIR" \
     "$REPORTS_PER_LIBRARY_DIR" \
     "$MERGED_REPORTS_DIR" \
+    "$GLOBAL_REPORTS_DIR" \
     "$PLOTS_DIR" \
-    "$PLOTS_GLOBAL_DIR" \
+    "$GLOBAL_PLOTS_DIR" \
     "$PER_PROJECT_DIR" \
     "$LOGS_DIR" \
     "$MANIFESTS_DIR"
@@ -90,10 +90,10 @@ save_manifest() {
   "summaries_dir": "$SUMMARIES_DIR",
   "csv_dir": "$CSV_DIR",
   "reports_dir": "$REPORTS_DIR",
-  "reports_global_dir": "$REPORTS_GLOBAL_DIR",
+  "global_reports_dir": "$GLOBAL_REPORTS_DIR",
   "merged_reports_dir": "$MERGED_REPORTS_DIR",
   "plots_dir": "$PLOTS_DIR",
-  "plots_global_dir": "$PLOTS_GLOBAL_DIR",
+  "global_plots_dir": "$GLOBAL_PLOTS_DIR",
   "per_project_dir": "$PER_PROJECT_DIR",
   "logs_dir": "$LOGS_DIR",
   "manifests_dir": "$MANIFESTS_DIR",
@@ -347,7 +347,7 @@ warmup_phase() {
       log "Warmup with $project_dir"
       (
         cd "$full_dir"
-        python3 scripts/run_bench.py || true
+        python3 scripts/run_bench.py >/dev/null 2>&1 || true
       )
       count=$((count + 1))
       settle_after
@@ -359,7 +359,7 @@ build_master_tables() {
   local script="$ROOT_DIR/build_master_summary.py"
 
   if [ ! -f "$script" ]; then
-    log "build_master_summary.py not found at repository root; global master table will not be generated"
+    log "build_master_summary.py not found; global master table will not be generated"
     return
   fi
 
@@ -369,7 +369,7 @@ build_master_tables() {
     --json-out "$MASTER_JSON" \
     --csv-out "$MASTER_CSV" \
     --pdf-out "$MASTER_PDF" \
-    --plots-dir "$PLOTS_GLOBAL_DIR"
+    --plots-dir "$GLOBAL_PLOTS_DIR"
 }
 
 merge_reports() {
@@ -381,12 +381,14 @@ merge_reports() {
   local script="$ROOT_DIR/merge.py"
 
   if [ ! -f "$script" ]; then
-    log "merge.sh not found at repository root; report merging skipped"
+    log "merge.py not found; report merging skipped"
     return
   fi
 
   log "Merging categorized PDF reports..."
-  bash "$script"
+  python3 "$script" \
+    --input-dir "$REPORTS_DIR" \
+    --output-dir "$MERGED_REPORTS_DIR"
 }
 
 main() {
