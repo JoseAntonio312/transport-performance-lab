@@ -32,7 +32,7 @@ RUN_MANIFEST_JSON="$MANIFESTS_DIR/run_manifest.json"
 
 PROJECT_DIRS=(
   "asio"
-  "taps-asio"
+  #"taps-asio"
   "async-berkeley"
   "bsd-sockets"
   "capy-corosio"

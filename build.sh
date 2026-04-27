@@ -4,12 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PROJECT_DIRS=(
-  "asio-standalone"
-  "benchmark_taps"
-  "benchmark_async_berkeley"
-  "boost-asio"
+  "asio"
+  "taps-asio"
+  "async-berkeley"
   "bsd-sockets"
-  "corosio"
+  "capy-corosio"
 )
 
 log() {
