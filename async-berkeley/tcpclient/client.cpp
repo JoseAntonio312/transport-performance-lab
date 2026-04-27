@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 José Antonio García Montañez
+ * Copyright (c) 2026 Jose Antonio Garcia Montanez
  *
  * TCP file client with async-berkeley
  * Minimal raw-byte client for performance and energy measurements.
@@ -17,21 +17,17 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <span>
 #include <string>
 
-// async-berkeley socket handle alias.
 using SocketHandle = io::socket::socket_handle;
 
-// Default remote TCP port.
 constexpr int DEFAULT_PORT = 8080;
-
-// Fixed receive buffer size.
 constexpr std::size_t BUFFER_SIZE = 8192;
 
-// Set a socket to non-blocking mode.
 static bool set_nonblocking(SocketHandle& fd) {
     const int flags = io::fcntl(fd, F_GETFL, 0);
     if (flags == -1) {
@@ -41,12 +37,10 @@ static bool set_nonblocking(SocketHandle& fd) {
     return io::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
 }
 
-// Return the native file descriptor so poll() can be used directly.
 static int native_fd(const SocketHandle& fd) {
     return static_cast<int>(fd);
 }
 
-// Wait until a non-blocking connect() completes.
 static bool wait_for_connect(SocketHandle& fd) {
     pollfd pfd{};
     pfd.fd = native_fd(fd);
@@ -79,8 +73,7 @@ static bool wait_for_connect(SocketHandle& fd) {
     }
 }
 
-// Create and connect a non-blocking TCP socket.
-static SocketHandle connect_tcp(const std::string& server_ip, int port) {
+static SocketHandle connect_to_server(const std::string& server_ip, int port) {
     SocketHandle sock(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
     if (native_fd(sock) < 0) {
@@ -93,7 +86,7 @@ static SocketHandle connect_tcp(const std::string& server_ip, int port) {
 
     sockaddr_in server{};
     server.sin_family = AF_INET;
-    server.sin_port = htons(static_cast<uint16_t>(port));
+    server.sin_port = htons(static_cast<std::uint16_t>(port));
 
     if (inet_pton(AF_INET, server_ip.c_str(), &server.sin_addr) <= 0) {
         return {};
@@ -113,8 +106,32 @@ static SocketHandle connect_tcp(const std::string& server_ip, int port) {
     return sock;
 }
 
-// Receive raw bytes until EOF and write them directly to disk.
-static bool download_to_file(SocketHandle& fd, const std::string& output_path) {
+static bool wait_for_readable(SocketHandle& fd) {
+    pollfd pfd{};
+    pfd.fd = native_fd(fd);
+    pfd.events = POLLIN;
+
+    while (true) {
+        const int ready = poll(&pfd, 1, -1);
+
+        if (ready > 0) {
+            if (pfd.revents & (POLLERR | POLLNVAL)) {
+                return false;
+            }
+
+            if (pfd.revents & (POLLIN | POLLHUP)) {
+                return true;
+            }
+        } else if (ready == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+    }
+}
+
+static bool receive_file(SocketHandle& fd, const std::string& output_path) {
     std::ofstream out(output_path, std::ios::binary);
     if (!out) {
         std::cerr << "Failed to open output file: " << output_path << "\n";
@@ -147,36 +164,14 @@ static bool download_to_file(SocketHandle& fd, const std::string& output_path) {
         }
 
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            pollfd pfd{};
-            pfd.fd = native_fd(fd);
-            pfd.events = POLLIN;
-
-            while (true) {
-                const int ready = poll(&pfd, 1, -1);
-
-                if (ready > 0) {
-                    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                        std::cerr << "Connection closed before the transfer completed.\n";
-                        return false;
-                    }
-
-                    if (pfd.revents & POLLIN) {
-                        break;
-                    }
-                } else if (ready == -1) {
-                    if (errno == EINTR) {
-                        continue;
-                    }
-
-                    std::cerr << "poll() failed.\n";
-                    return false;
-                }
+            if (!wait_for_readable(fd)) {
+                std::cerr << "poll failed before transfer completion.\n";
+                return false;
             }
-
             continue;
         }
 
-        std::cerr << "recvmsg() failed.\n";
+        std::cerr << "recvmsg failed: " << std::strerror(errno) << "\n";
         return false;
     }
 
@@ -206,15 +201,11 @@ int main(int argc, char* argv[]) {
         output_path = argv[3];
     }
 
-    SocketHandle sock = connect_tcp(server_ip, port);
+    SocketHandle sock = connect_to_server(server_ip, port);
     if (native_fd(sock) < 0) {
-        std::cerr << "connect() failed.\n";
+        std::cerr << "connect failed\n";
         return 1;
     }
 
-    if (!download_to_file(sock, output_path)) {
-        return 1;
-    }
-
-    return 0;
+    return receive_file(sock, output_path) ? 0 : 1;
 }

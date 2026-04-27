@@ -9,10 +9,32 @@ BENCHMARK_INSTALL_CLANG="${HOME}/Escritorio/TFM/google-benchmark-install-clang-l
 
 CLANG_C_COMPILER="/usr/bin/clang-19"
 CLANG_CXX_COMPILER="/usr/bin/clang++-19"
+
+GCC_C_COMPILER="/usr/local/gcc-14.1.0/bin/gcc-14.1.0"
 GCC_CXX_COMPILER="/usr/local/gcc-14.1.0/bin/g++-14.1.0"
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1
+}
+
+check_taps_install() {
+    local taps_prefix="$1"
+
+    if [ ! -f "$taps_prefix/include/taps/taps_api.h" ]; then
+        echo "Error: TAPS header not found:"
+        echo "  $taps_prefix/include/taps/taps_api.h"
+        echo ""
+        echo "Build and install proyecto_taps first."
+        exit 1
+    fi
+
+    if [ ! -f "$taps_prefix/lib/libtaps.a" ]; then
+        echo "Error: TAPS static library not found:"
+        echo "  $taps_prefix/lib/libtaps.a"
+        echo ""
+        echo "Build and install proyecto_taps first."
+        exit 1
+    fi
 }
 
 ensure_google_benchmark_repo() {
@@ -47,6 +69,9 @@ ensure_clang_benchmark_install() {
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_COMPILER="$CLANG_C_COMPILER" \
         -DCMAKE_CXX_COMPILER="$CLANG_CXX_COMPILER" \
+        -DCMAKE_CXX_STANDARD=23 \
+        -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+        -DCMAKE_CXX_EXTENSIONS=OFF \
         -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
         -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++" \
         -DCMAKE_SHARED_LINKER_FLAGS="-stdlib=libc++" \
@@ -62,6 +87,7 @@ build_one() {
     local compiler="$1"
     local build_dir=""
     local compiler_label=""
+    local c_compiler=""
     local cxx_compiler=""
     local taps_prefix=""
     local cmake_prefix_path=""
@@ -72,21 +98,31 @@ build_one() {
       gcc)
         build_dir="build-gcc"
         compiler_label="GCC 14.1.0"
+        c_compiler="$GCC_C_COMPILER"
         cxx_compiler="$GCC_CXX_COMPILER"
         taps_prefix="$TAPS_INSTALL_GCC"
         cmake_prefix_path="$taps_prefix"
+
+        check_taps_install "$taps_prefix"
+
         extra_cmake_args=(
           -DTAPS_ROOT="$taps_prefix"
           -DTAPS_TCP_USE_LIBCXX=OFF
           -DTAPS_ENABLE_BENCHMARKS=ON
+          -DCMAKE_CXX_STANDARD=23
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON
+          -DCMAKE_CXX_EXTENSIONS=OFF
         )
         ;;
+
       clang)
         build_dir="build-clang"
         compiler_label="Clang 19 + libc++"
+        c_compiler="$CLANG_C_COMPILER"
         cxx_compiler="$CLANG_CXX_COMPILER"
         taps_prefix="$TAPS_INSTALL_CLANG"
 
+        check_taps_install "$taps_prefix"
         ensure_clang_benchmark_install
 
         benchmark_dir="$BENCHMARK_INSTALL_CLANG/lib/cmake/benchmark"
@@ -97,8 +133,15 @@ build_one() {
           -Dbenchmark_DIR="$benchmark_dir"
           -DTAPS_TCP_USE_LIBCXX=ON
           -DTAPS_ENABLE_BENCHMARKS=ON
+          -DCMAKE_CXX_STANDARD=23
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON
+          -DCMAKE_CXX_EXTENSIONS=OFF
+          -DCMAKE_CXX_FLAGS="-stdlib=libc++"
+          -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++"
+          -DCMAKE_SHARED_LINKER_FLAGS="-stdlib=libc++"
         )
         ;;
+
       *)
         echo "Unsupported compiler: $compiler"
         exit 1
@@ -110,6 +153,7 @@ build_one() {
     cmake -S . -B "$build_dir" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_PREFIX_PATH="$cmake_prefix_path" \
+        -DCMAKE_C_COMPILER="$c_compiler" \
         -DCMAKE_CXX_COMPILER="$cxx_compiler" \
         "${extra_cmake_args[@]}"
 
@@ -120,10 +164,12 @@ build_one() {
     echo "TAPS TCP Release build completed with $compiler_label."
     echo "Using TAPS from:"
     echo "  $taps_prefix"
+
     if [ "$compiler" = "clang" ]; then
         echo "Using Google Benchmark from:"
         echo "  $BENCHMARK_INSTALL_CLANG"
     fi
+
     echo "Executables:"
     echo "  $build_dir/tcpserver/tcpserver"
     echo "  $build_dir/tcpclient/tcpclient"

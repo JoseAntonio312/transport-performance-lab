@@ -1,0 +1,9 @@
+TAPS MOD FOR CLANG:
+
+CMAKELISTS:
+
+proyecto-taps/ -> CMAKELISTS
+
+proyecto-taps/src/ -> CMAKELISTS
+
+proyecto-taps/include/taps/taps_api.h -> INCLUDES

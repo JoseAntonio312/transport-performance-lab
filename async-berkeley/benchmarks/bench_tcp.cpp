@@ -1,8 +1,8 @@
 /*
- * Copyright (c) 2026 José Antonio García Montañez
+ * Copyright (c) 2026 Jose Antonio Garcia Montanez
  *
- * async-berkeley file download benchmark
- * Minimal raw-byte benchmark for performance and energy measurements.
+ * asyncberkeley raw-byte file download benchmark
+ * Minimal benchmark version for performance and energy measurements.
  */
 
 #include <benchmark/benchmark.h>
@@ -22,19 +22,13 @@
 #include <span>
 #include <string>
 
-// async-berkeley socket handle alias.
 using SocketHandle = io::socket::socket_handle;
 
-// Default server TCP port.
 constexpr int DEFAULT_PORT = 8080;
-
-// Runtime-configurable server port.
-static int g_port = DEFAULT_PORT;
-
-// Fixed receive buffer size.
 constexpr std::size_t BUFFER_SIZE = 8192;
 
-// Set a socket to non-blocking mode.
+static int g_port = DEFAULT_PORT;
+
 static bool set_nonblocking(SocketHandle& fd) {
     const int flags = io::fcntl(fd, F_GETFL, 0);
     if (flags == -1) {
@@ -44,12 +38,10 @@ static bool set_nonblocking(SocketHandle& fd) {
     return io::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
 }
 
-// Return the native file descriptor so poll() can be used directly.
 static int native_fd(const SocketHandle& fd) {
     return static_cast<int>(fd);
 }
 
-// Wait until a non-blocking connect() completes.
 static bool wait_for_connect(SocketHandle& fd) {
     pollfd pfd{};
     pfd.fd = native_fd(fd);
@@ -82,8 +74,7 @@ static bool wait_for_connect(SocketHandle& fd) {
     }
 }
 
-// Create and connect a non-blocking TCP socket.
-static SocketHandle connect_tcp(const char* ip, int port) {
+static SocketHandle connect_to_server(const char* ip, int port) {
     SocketHandle sock(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
     if (native_fd(sock) < 0) {
@@ -96,7 +87,7 @@ static SocketHandle connect_tcp(const char* ip, int port) {
 
     sockaddr_in server{};
     server.sin_family = AF_INET;
-    server.sin_port = htons(static_cast<uint16_t>(port));
+    server.sin_port = htons(static_cast<std::uint16_t>(port));
 
     if (inet_pton(AF_INET, ip, &server.sin_addr) <= 0) {
         return {};
@@ -116,8 +107,36 @@ static SocketHandle connect_tcp(const char* ip, int port) {
     return sock;
 }
 
-// Download raw bytes until EOF.
-static bool download_until_eof(SocketHandle& fd, std::array<char, BUFFER_SIZE>& buffer) {
+static bool wait_for_readable(SocketHandle& fd) {
+    pollfd pfd{};
+    pfd.fd = native_fd(fd);
+    pfd.events = POLLIN;
+
+    while (true) {
+        const int ready = poll(&pfd, 1, -1);
+
+        if (ready > 0) {
+            if (pfd.revents & (POLLERR | POLLNVAL)) {
+                return false;
+            }
+
+            if (pfd.revents & (POLLIN | POLLHUP)) {
+                return true;
+            }
+        } else if (ready == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+    }
+}
+
+static bool receive_file(SocketHandle& fd,
+                         std::array<char, BUFFER_SIZE>& buffer,
+                         std::uint64_t& total_bytes) {
+    total_bytes = 0;
+
     while (true) {
         io::socket::socket_message<> msg;
         msg.buffers.emplace_back(buffer.data(), buffer.size());
@@ -125,11 +144,15 @@ static bool download_until_eof(SocketHandle& fd, std::array<char, BUFFER_SIZE>& 
         const ssize_t n = io::recvmsg(fd, msg, 0);
 
         if (n > 0) {
+            total_bytes += static_cast<std::uint64_t>(n);
+            benchmark::DoNotOptimize(buffer.data());
+            benchmark::DoNotOptimize(total_bytes);
+            benchmark::ClobberMemory();
             continue;
         }
 
         if (n == 0) {
-            return true;
+            return total_bytes > 0;
         }
 
         if (errno == EINTR) {
@@ -137,29 +160,9 @@ static bool download_until_eof(SocketHandle& fd, std::array<char, BUFFER_SIZE>& 
         }
 
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            pollfd pfd{};
-            pfd.fd = native_fd(fd);
-            pfd.events = POLLIN;
-
-            while (true) {
-                const int ready = poll(&pfd, 1, -1);
-
-                if (ready > 0) {
-                    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                        return false;
-                    }
-
-                    if (pfd.revents & POLLIN) {
-                        break;
-                    }
-                } else if (ready == -1) {
-                    if (errno == EINTR) {
-                        continue;
-                    }
-                    return false;
-                }
+            if (!wait_for_readable(fd)) {
+                return false;
             }
-
             continue;
         }
 
@@ -167,29 +170,41 @@ static bool download_until_eof(SocketHandle& fd, std::array<char, BUFFER_SIZE>& 
     }
 }
 
-// Benchmark one full file download.
+static bool run_benchmark_client(const char* ip,
+                                 int port,
+                                 std::array<char, BUFFER_SIZE>& buffer,
+                                 std::uint64_t& total_bytes) {
+    SocketHandle sock = connect_to_server(ip, port);
+    if (native_fd(sock) < 0) {
+        return false;
+    }
+
+    return receive_file(sock, buffer, total_bytes);
+}
+
 static void BM_TCP_FileDownload(benchmark::State& state) {
     constexpr const char* ip = "127.0.0.1";
     const int port = g_port;
 
     std::array<char, BUFFER_SIZE> buffer{};
+    std::uint64_t bytes_processed = 0;
+    std::uint64_t last_downloaded_bytes = 0;
 
     for (auto _ : state) {
-        SocketHandle sock = connect_tcp(ip, port);
+        (void)_;
 
-        if (native_fd(sock) < 0) {
-            state.SkipWithError("connect() failed.");
+        std::uint64_t downloaded_bytes = 0;
+        if (!run_benchmark_client(ip, port, buffer, downloaded_bytes)) {
+            state.SkipWithError("Download failed.");
             break;
         }
 
-        if (!download_until_eof(sock, buffer)) {
-            state.SkipWithError("download failed.");
-            break;
-        }
-
-        benchmark::DoNotOptimize(buffer.data());
-        benchmark::ClobberMemory();
+        bytes_processed += downloaded_bytes;
+        last_downloaded_bytes = downloaded_bytes;
     }
+
+    state.SetBytesProcessed(static_cast<int64_t>(bytes_processed));
+    state.counters["downloaded_bytes"] = static_cast<double>(last_downloaded_bytes);
 }
 
 BENCHMARK(BM_TCP_FileDownload)

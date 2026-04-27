@@ -2,7 +2,7 @@ add_executable(tcpclient client.cpp)
 
 target_link_libraries(tcpclient
     PRIVATE
-        ${TAPS_LINK_TARGET}
+        TAPS::static
         Threads::Threads
 )
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 José Antonio García Montañez
+ * Copyright (c) 2026 Jose Antonio Garcia Montanez
  *
  * TCP file server with Asio
  * Minimal raw-byte server for performance and energy measurements.
@@ -22,28 +22,21 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace fs = std::filesystem;
 using tcp = asio::ip::tcp;
 
-// Default TCP listening port.
 constexpr int DEFAULT_PORT = 8080;
-
-// Maximum pending connections in the listen queue.
 constexpr int BACKLOG = 128;
-
-// Maximum supported worker threads for the fixed-size thread array.
 constexpr int MAX_THREADS = 256;
 
-// Read-only file mapping.
 struct FileMapping {
     int fd = -1;
     const char* data = nullptr;
     std::size_t size = 0;
 };
 
-// Open the file and expose it as a read-only memory mapping.
-// This avoids std::vector while still providing a contiguous byte range.
 static FileMapping map_file_read_only(const fs::path& path) {
     FileMapping mapping{};
 
@@ -70,7 +63,6 @@ static FileMapping map_file_read_only(const fs::path& path) {
     return mapping;
 }
 
-// Release a file mapping created by map_file_read_only().
 static void unmap_file(FileMapping& mapping) {
     if (mapping.data != nullptr && mapping.size > 0) {
         munmap(const_cast<char*>(mapping.data), mapping.size);
@@ -85,23 +77,28 @@ static void unmap_file(FileMapping& mapping) {
     mapping.size = 0;
 }
 
-// Send the whole mapped payload to one client socket.
-static asio::awaitable<void> do_write(tcp::socket socket, std::span<const char> payload) {
+static asio::awaitable<void> send_file(tcp::socket& socket, std::span<const char> payload) {
     std::size_t sent = 0;
 
-    try {
-        while (sent < payload.size()) {
-            const std::size_t bytes_transferred = co_await socket.async_write_some(
-                asio::buffer(payload.data() + sent, payload.size() - sent),
-                asio::use_awaitable
-            );
+    while (sent < payload.size()) {
+        const std::size_t bytes_transferred = co_await socket.async_write_some(
+            asio::buffer(payload.data() + sent, payload.size() - sent),
+            asio::use_awaitable
+        );
 
-            if (bytes_transferred == 0) {
-                break;
-            }
-
-            sent += bytes_transferred;
+        if (bytes_transferred == 0) {
+            break;
         }
+
+        sent += bytes_transferred;
+    }
+
+    co_return;
+}
+
+static asio::awaitable<void> serve_client(tcp::socket socket, std::span<const char> payload) {
+    try {
+        co_await send_file(socket, payload);
     } catch (...) {
     }
 
@@ -112,8 +109,7 @@ static asio::awaitable<void> do_write(tcp::socket socket, std::span<const char> 
     co_return;
 }
 
-// Accept connections forever and spawn one coroutine per client.
-static asio::awaitable<void> do_accept(tcp::acceptor& acceptor, std::span<const char> payload) {
+static asio::awaitable<void> accept_loop(tcp::acceptor& acceptor, std::span<const char> payload) {
     auto executor = co_await asio::this_coro::executor;
 
     while (true) {
@@ -123,7 +119,7 @@ static asio::awaitable<void> do_accept(tcp::acceptor& acceptor, std::span<const 
 
             asio::co_spawn(
                 executor,
-                do_write(std::move(socket), payload),
+                serve_client(std::move(socket), payload),
                 asio::detached
             );
         } catch (...) {
@@ -211,22 +207,22 @@ int main(int argc, char* argv[]) {
 
         asio::co_spawn(
             io_context,
-            do_accept(acceptor, payload),
+            accept_loop(acceptor, payload),
             asio::detached
         );
 
-        std::thread pool[MAX_THREADS];
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<std::size_t>(threads));
 
         for (int i = 0; i < threads; ++i) {
-            pool[i] = std::thread([&io_context]() {
+            pool.emplace_back([&io_context]() {
                 io_context.run();
             });
         }
 
-        for (int i = 0; i < threads; ++i) {
-            pool[i].join();
+        for (auto& worker : pool) {
+            worker.join();
         }
-
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         unmap_file(mapping);

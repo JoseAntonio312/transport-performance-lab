@@ -1,9 +1,8 @@
 /*
- * Copyright (c) 2026 José Antonio García Montañez
+ * Copyright (c) 2026 Jose Antonio Garcia Montanez
  *
  * TCP file server with Corosio
  * Minimal raw-byte server for performance and energy measurements.
- *
  */
 
 #include <csignal>
@@ -27,25 +26,16 @@ namespace fs = std::filesystem;
 namespace corosio = boost::corosio;
 namespace capy = boost::capy;
 
-// Default TCP listening port.
 constexpr int DEFAULT_PORT = 8080;
-
-// Maximum number of pending connections in the listen queue.
 constexpr int BACKLOG = 128;
-
-// Maximum supported file size in memory.
-// Increased to 2 GiB to allow large benchmark files.
+constexpr int MAX_THREADS = 256;
 constexpr std::uint64_t MAX_FILE_SIZE = 2ull * 1024ull * 1024ull * 1024ull;
 
-// Heap-backed in-memory file storage.
-// This avoids putting very large buffers on the stack.
 struct FileBuffer {
     std::unique_ptr<char[]> data;
     std::size_t valid_size = 0;
 };
 
-// Load the whole file into memory before starting the server.
-// This removes disk I/O from the measured serving phase.
 static FileBuffer load_file_into_memory(const fs::path& path) {
     const std::uint64_t file_size_u64 = fs::file_size(path);
 
@@ -75,10 +65,8 @@ static FileBuffer load_file_into_memory(const fs::path& path) {
     return file_buffer;
 }
 
-// Send the whole in-memory file to one client.
-// The function keeps writing until all bytes are sent or the socket fails.
-static capy::task<void> serve_client(
-    corosio::tcp_socket sock,
+static capy::task<void> send_file(
+    corosio::tcp_socket& sock,
     std::span<const char> file_view
 ) {
     std::size_t sent = 0;
@@ -95,11 +83,18 @@ static capy::task<void> serve_client(
         sent += static_cast<std::size_t>(n);
     }
 
+    co_return;
+}
+
+static capy::task<void> serve_client(
+    corosio::tcp_socket sock,
+    std::span<const char> file_view
+) {
+    co_await send_file(sock, file_view);
     sock.close();
     co_return;
 }
 
-// Accept connections forever and spawn one coroutine per accepted client.
 static capy::task<void> accept_loop(
     corosio::io_context& ctx,
     corosio::tcp_acceptor& acceptor,
@@ -141,7 +136,7 @@ int main(int argc, char* argv[]) {
 
     if (argc == 4) {
         threads = std::stoi(argv[3]);
-        if (threads <= 0) {
+        if (threads <= 0 || threads > MAX_THREADS) {
             std::cerr << "Invalid thread count.\n";
             return 1;
         }
@@ -187,9 +182,6 @@ int main(int argc, char* argv[]) {
             accept_loop(ctx, acceptor, file_view)
         );
 
-        // Run the same io_context on N worker threads.
-        // Each thread calls ctx.run(), so all of them participate in executing
-        // the accept loop and the per-client send coroutines.
         std::vector<std::thread> pool;
         pool.reserve(static_cast<std::size_t>(threads));
 
@@ -204,7 +196,6 @@ int main(int argc, char* argv[]) {
         }
 
         return 0;
-
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;

@@ -1,104 +1,141 @@
 /*
- * Copyright (c) 2026 José Antonio García Montañez
+ * Copyright (c) 2026 Jose Antonio Garcia Montanez
  *
- * Asio file download benchmark
- * Minimal raw-byte benchmark for performance and energy measurements.
- *
+ * Asio raw-byte file download benchmark
+ * Minimal benchmark version for performance and energy measurements.
  */
 
 #include <benchmark/benchmark.h>
 
 #include <asio.hpp>
+#include <asio/awaitable.hpp>
+#include <asio/co_spawn.hpp>
+#include <asio/detached.hpp>
+#include <asio/redirect_error.hpp>
+#include <asio/use_awaitable.hpp>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <string>
+#include <system_error>
 
 using tcp = asio::ip::tcp;
 
-// Default server TCP port.
 constexpr int DEFAULT_PORT = 8080;
-
-// Runtime-configurable server port.
-static int g_port = DEFAULT_PORT;
-
-// Fixed receive buffer size.
 constexpr std::size_t BUFFER_SIZE = 8192;
 
-// Download raw bytes until EOF.
-static asio::awaitable<void> do_download(
-    tcp::socket& socket,
-    std::array<char, BUFFER_SIZE>& buffer
-) {
+static int g_port = DEFAULT_PORT;
+
+static asio::awaitable<bool> connect_to_server(tcp::socket& socket,
+                                               const char* ip,
+                                               int port) {
+    std::error_code ec;
+
+    tcp::endpoint endpoint(
+        asio::ip::make_address(ip, ec),
+        static_cast<unsigned short>(port)
+    );
+
+    if (ec) {
+        co_return false;
+    }
+
+    co_await socket.async_connect(endpoint, asio::redirect_error(asio::use_awaitable, ec));
+    co_return !ec;
+}
+
+static asio::awaitable<bool> receive_file(tcp::socket& socket,
+                                          std::array<char, BUFFER_SIZE>& buffer,
+                                          std::uint64_t& total_bytes) {
+    total_bytes = 0;
+
     while (true) {
-        const std::size_t bytes_transferred = co_await socket.async_read_some(
-            asio::buffer(buffer.data(), buffer.size()),
-            asio::use_awaitable
+        std::error_code ec;
+        const std::size_t n = co_await socket.async_read_some(
+            asio::buffer(buffer),
+            asio::redirect_error(asio::use_awaitable, ec)
         );
 
-        if (bytes_transferred == 0) {
+        if (n > 0) {
+            total_bytes += static_cast<std::uint64_t>(n);
+            benchmark::DoNotOptimize(buffer.data());
+            benchmark::DoNotOptimize(total_bytes);
+            benchmark::ClobberMemory();
+            continue;
+        }
+
+        if (ec == asio::error::eof || ec == asio::error::connection_reset) {
+            break;
+        }
+
+        if (ec) {
+            co_return false;
+        }
+
+        if (n == 0) {
             break;
         }
     }
 
-    std::error_code close_ec;
-    socket.shutdown(tcp::socket::shutdown_both, close_ec);
-    socket.close(close_ec);
-
-    co_return;
+    co_return total_bytes > 0;
 }
 
-// Connect and run one full download session.
-static asio::awaitable<void> do_session(
-    const char* ip,
-    int port,
-    std::array<char, BUFFER_SIZE>& buffer
-) {
+static asio::awaitable<bool> run_benchmark_client(const char* ip,
+                                                  int port,
+                                                  std::array<char, BUFFER_SIZE>& buffer,
+                                                  std::uint64_t& total_bytes) {
     auto executor = co_await asio::this_coro::executor;
     tcp::socket socket(executor);
 
-    const tcp::endpoint server(asio::ip::make_address(ip), static_cast<unsigned short>(port));
+    if (!(co_await connect_to_server(socket, ip, port))) {
+        co_return false;
+    }
 
-    co_await socket.async_connect(server, asio::use_awaitable);
-    co_await do_download(socket, buffer);
+    const bool ok = co_await receive_file(socket, buffer, total_bytes);
+
+    std::error_code ignored;
+    socket.close(ignored);
+
+    co_return ok;
 }
 
-// Benchmark one full file download.
 static void BM_TCP_FileDownload(benchmark::State& state) {
     constexpr const char* ip = "127.0.0.1";
     const int port = g_port;
 
+    std::uint64_t bytes_processed = 0;
+    std::uint64_t last_downloaded_bytes = 0;
+
     for (auto _ : state) {
+        (void)_;
+
         asio::io_context io_context;
         std::array<char, BUFFER_SIZE> buffer{};
-
-        std::exception_ptr eptr;
+        std::uint64_t downloaded_bytes = 0;
+        bool ok = false;
 
         asio::co_spawn(
             io_context,
-            do_session(ip, port, buffer),
-            [&eptr](std::exception_ptr e) {
-                eptr = e;
-            }
+            [&]() -> asio::awaitable<void> {
+                ok = co_await run_benchmark_client(ip, port, buffer, downloaded_bytes);
+            },
+            asio::detached
         );
 
-        try {
-            io_context.run();
+        io_context.run();
 
-            if (eptr) {
-                std::rethrow_exception(eptr);
-            }
-
-            benchmark::DoNotOptimize(buffer.data());
-            benchmark::ClobberMemory();
-
-        } catch (const std::exception& e) {
-            state.SkipWithError(e.what());
+        if (!ok) {
+            state.SkipWithError("Download failed.");
             break;
         }
+
+        bytes_processed += downloaded_bytes;
+        last_downloaded_bytes = downloaded_bytes;
     }
+
+    state.SetBytesProcessed(static_cast<int64_t>(bytes_processed));
+    state.counters["downloaded_bytes"] = static_cast<double>(last_downloaded_bytes);
 }
 
 BENCHMARK(BM_TCP_FileDownload)

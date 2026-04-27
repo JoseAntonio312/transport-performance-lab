@@ -1,8 +1,8 @@
 /*
- * Copyright (c) 2026 José Antonio García Montañez
+ * Copyright (c) 2026 Jose Antonio Garcia Montanez
  *
- * Asyncronous BSD sockets file download benchmark with epoll()
- * Minimal raw-byte benchmark for performance and energy measurements.
+ * BSD sockets raw-byte file download benchmark
+ * Minimal benchmark version for performance and energy measurements.
  */
 
 #include <benchmark/benchmark.h>
@@ -21,16 +21,11 @@
 #include <cstring>
 #include <string>
 
-// Default server TCP port.
 constexpr int DEFAULT_PORT = 8080;
-
-// Runtime-configurable server port.
-static int g_port = DEFAULT_PORT;
-
-// Fixed receive buffer size.
 constexpr std::size_t BUFFER_SIZE = 8192;
 
-// Set a socket to non-blocking mode.
+static int g_port = DEFAULT_PORT;
+
 static bool set_nonblocking(int fd) {
     const int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1) {
@@ -40,7 +35,6 @@ static bool set_nonblocking(int fd) {
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
 }
 
-// Wait until a non-blocking connect operation completes.
 static bool wait_for_connect(int fd) {
     pollfd pfd{};
     pfd.fd = fd;
@@ -73,8 +67,7 @@ static bool wait_for_connect(int fd) {
     }
 }
 
-// Create and connect a non-blocking TCP socket.
-static int connect_tcp(const char* ip, int port) {
+static int connect_to_server(const char* ip, int port) {
     const int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock == -1) {
         return -1;
@@ -109,25 +102,49 @@ static int connect_tcp(const char* ip, int port) {
     return sock;
 }
 
-// Download raw bytes until the peer closes the connection.
-static bool download_file(const char* ip, int port, std::array<char, BUFFER_SIZE>& buffer) {
-    const int sock = connect_tcp(ip, port);
-    if (sock == -1) {
-        return false;
+static bool wait_for_readable(int fd) {
+    pollfd pfd{};
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+
+    while (true) {
+        const int ready = poll(&pfd, 1, -1);
+
+        if (ready > 0) {
+            if (pfd.revents & (POLLERR | POLLNVAL)) {
+                return false;
+            }
+
+            if (pfd.revents & (POLLIN | POLLHUP)) {
+                return true;
+            }
+        } else if (ready == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
     }
+}
+
+static bool receive_file(int sock,
+                         std::array<char, BUFFER_SIZE>& buffer,
+                         std::uint64_t& total_bytes) {
+    total_bytes = 0;
 
     while (true) {
         const ssize_t n = recv(sock, buffer.data(), buffer.size(), 0);
 
         if (n > 0) {
+            total_bytes += static_cast<std::uint64_t>(n);
+            benchmark::DoNotOptimize(buffer.data());
+            benchmark::DoNotOptimize(total_bytes);
+            benchmark::ClobberMemory();
             continue;
         }
 
         if (n == 0) {
-            close(sock);
-            benchmark::DoNotOptimize(buffer.data());
-            benchmark::ClobberMemory();
-            return true;
+            return total_bytes > 0;
         }
 
         if (errno == EINTR) {
@@ -135,53 +152,53 @@ static bool download_file(const char* ip, int port, std::array<char, BUFFER_SIZE
         }
 
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            pollfd pfd{};
-            pfd.fd = sock;
-            pfd.events = POLLIN;
-
-            while (true) {
-                const int ready = poll(&pfd, 1, -1);
-
-                if (ready > 0) {
-                    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                        close(sock);
-                        return false;
-                    }
-
-                    if (pfd.revents & POLLIN) {
-                        break;
-                    }
-                } else if (ready == -1) {
-                    if (errno == EINTR) {
-                        continue;
-                    }
-
-                    close(sock);
-                    return false;
-                }
+            if (!wait_for_readable(sock)) {
+                return false;
             }
-
             continue;
         }
 
-        close(sock);
         return false;
     }
 }
 
-// Benchmark one full file download.
+static bool run_benchmark_client(const char* ip,
+                                 int port,
+                                 std::array<char, BUFFER_SIZE>& buffer,
+                                 std::uint64_t& total_bytes) {
+    const int sock = connect_to_server(ip, port);
+    if (sock == -1) {
+        return false;
+    }
+
+    const bool ok = receive_file(sock, buffer, total_bytes);
+    close(sock);
+    return ok;
+}
+
 static void BM_TCP_FileDownload(benchmark::State& state) {
     constexpr const char* ip = "127.0.0.1";
     const int port = g_port;
 
     std::array<char, BUFFER_SIZE> buffer{};
+    std::uint64_t bytes_processed = 0;
+    std::uint64_t last_downloaded_bytes = 0;
 
     for (auto _ : state) {
-        if (!download_file(ip, port, buffer)) {
+        (void)_;
+
+        std::uint64_t downloaded_bytes = 0;
+        if (!run_benchmark_client(ip, port, buffer, downloaded_bytes)) {
             state.SkipWithError("Download failed.");
             break;
         }
+
+        bytes_processed += downloaded_bytes;
+        last_downloaded_bytes = downloaded_bytes;
     }
+
+    state.SetBytesProcessed(static_cast<int64_t>(bytes_processed));
+    state.counters["downloaded_bytes"] = static_cast<double>(last_downloaded_bytes);
 }
 
 BENCHMARK(BM_TCP_FileDownload)

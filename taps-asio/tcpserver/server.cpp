@@ -1,108 +1,141 @@
 /*
- * Copyright (c) 2026 José Antonio García Montañez
+ * Copyright (c) 2026 Jose Antonio Garcia Montanez
  *
  * TCP file server with TAPS
  * Minimal raw-byte server for performance and energy measurements.
  */
 
-#include <csignal>
-
 #include "taps/taps_api.h"
+
 #include <asio.hpp>
 #include <asio/awaitable.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
 #include <asio/use_awaitable.hpp>
 
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
 
-// Default TCP port.
 constexpr int DEFAULT_PORT = 8080;
+constexpr int MAX_THREADS = 256;
 
-// Maximum supported file size loaded in memory.
-// Adjust this if you need larger files.
-constexpr std::size_t MAX_FILE_SIZE = 2ull * 1024ull * 1024ull * 1024ull;
-
-// Fixed in-memory file buffer.
-struct FileBuffer {
-    std::vector<char> data;
+struct FileMapping {
+    int fd = -1;
+    const char* data = nullptr;
+    std::size_t size = 0;
 };
 
-// Load the whole file into memory before serving clients.
-// This removes disk I/O from the measurement phase.
-static FileBuffer load_file_into_memory(const fs::path& path) {
-    FileBuffer file_buffer;
+static FileMapping map_file_read_only(const fs::path& path) {
+    FileMapping mapping{};
 
-    const auto file_size = fs::file_size(path);
-    if (file_size > MAX_FILE_SIZE) {
-        throw std::runtime_error("File is larger than MAX_FILE_SIZE.");
-    }
+    const std::uintmax_t file_size = fs::file_size(path);
+    mapping.size = static_cast<std::size_t>(file_size);
 
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
+    mapping.fd = open(path.c_str(), O_RDONLY);
+    if (mapping.fd == -1) {
         throw std::runtime_error("Failed to open file: " + path.string());
     }
 
-    file_buffer.data.resize(static_cast<std::size_t>(file_size));
-
-    if (file_size > 0) {
-        file.read(file_buffer.data.data(), static_cast<std::streamsize>(file_size));
-        if (!file) {
-            throw std::runtime_error("Failed to read file contents.");
-        }
+    if (mapping.size == 0) {
+        mapping.data = nullptr;
+        return mapping;
     }
 
-    return file_buffer;
+    void* ptr = mmap(nullptr, mapping.size, PROT_READ, MAP_PRIVATE, mapping.fd, 0);
+    if (ptr == MAP_FAILED) {
+        close(mapping.fd);
+        throw std::runtime_error("mmap failed.");
+    }
+
+    mapping.data = static_cast<const char*>(ptr);
+    return mapping;
 }
 
-// Send the whole file as raw bytes through one TAPS connection.
-// No application-level header is used.
-// Important: no co_await is performed inside the catch block.
-static asio::awaitable<void> do_write(
-    std::unique_ptr<taps::Connection> connection,
-    std::span<const char> file_view
-) {
-    bool must_close = true;
-
-    try {
-        if (!file_view.empty()) {
-            std::vector<std::uint8_t> payload(
-                reinterpret_cast<const std::uint8_t*>(file_view.data()),
-                reinterpret_cast<const std::uint8_t*>(file_view.data() + file_view.size())
-            );
-
-            auto result = co_await connection->send(taps::Message(std::move(payload)));
-            if (!result) {
-                must_close = true;
-            }
-        }
-    } catch (...) {
-        must_close = true;
+static void unmap_file(FileMapping& mapping) {
+    if (mapping.data != nullptr && mapping.size > 0) {
+        munmap(const_cast<char*>(mapping.data), mapping.size);
     }
 
-    if (must_close) {
-        auto close_result = co_await connection->close();
-        (void)close_result;
+    if (mapping.fd != -1) {
+        close(mapping.fd);
+    }
+
+    mapping.data = nullptr;
+    mapping.fd = -1;
+    mapping.size = 0;
+}
+
+static asio::awaitable<void> send_file(
+    taps::Connection& connection,
+    std::span<const char> payload
+) {
+    if (payload.empty()) {
+        co_return;
+    }
+
+    /*
+     * Keep the semantics equivalent to the other asynchronous servers:
+     *
+     * - one logical file transfer per client;
+     * - the coroutine awaits the asynchronous send operation;
+     * - the accept loop is not blocked because serve_client() is spawned
+     *   independently with co_spawn().
+     *
+     * string_view is used to avoid building an explicit std::vector copy here.
+     * The TAPS Message implementation may still copy internally, but this server
+     * does not create an extra per-client payload vector.
+     */
+    const std::string_view payload_view(payload.data(), payload.size());
+
+    auto message = taps::make_message(payload_view);
+
+    auto send_result = co_await connection.send(std::move(message));
+    if (!send_result) {
+        std::cerr << "send failed: " << send_result.error().message() << "\n";
+        co_return;
     }
 
     co_return;
 }
 
-// Accept loop for incoming TAPS connections.
-static asio::awaitable<void> do_accept(
+static asio::awaitable<void> serve_client(
+    std::unique_ptr<taps::Connection> connection,
+    std::span<const char> payload
+) {
+    try {
+        co_await send_file(*connection, payload);
+    } catch (const std::exception& e) {
+        std::cerr << "serve_client exception: " << e.what() << "\n";
+    } catch (...) {
+        std::cerr << "serve_client unknown exception\n";
+    }
+
+    auto close_result = co_await connection->close();
+    (void)close_result;
+
+    co_return;
+}
+
+static asio::awaitable<void> accept_loop(
     taps::Listener& listener,
-    std::span<const char> file_view
+    std::span<const char> payload
 ) {
     auto executor = co_await asio::this_coro::executor;
 
@@ -110,15 +143,58 @@ static asio::awaitable<void> do_accept(
         auto accept_result = co_await listener.accept();
 
         if (!accept_result) {
+            std::cerr << "accept failed: " << accept_result.error().message() << "\n";
             continue;
         }
 
+        /*
+         * Critical point for fairness:
+         *
+         * Do not co_await serve_client() here.
+         * Spawn the client coroutine and immediately go back to accept().
+         * This matches the Asio/Corosio concurrent server structure.
+         */
         asio::co_spawn(
             executor,
-            do_write(std::move(*accept_result), file_view),
+            serve_client(std::move(*accept_result), payload),
             asio::detached
         );
     }
+}
+
+static asio::awaitable<void> listen_loop(
+    asio::io_context& io_context,
+    int port,
+    std::span<const char> payload
+) {
+    taps::TransportServices transport_services(io_context);
+
+    taps::TransportProperties properties;
+    properties.set(taps::PropertyKey::RELIABILITY, taps::SelectionProperty::REQUIRE);
+    properties.set(taps::PropertyKey::PRESERVE_ORDER, taps::SelectionProperty::REQUIRE);
+
+    /*
+     * With the current TAPS API, TransportServices::listen() creates the
+     * listening endpoint directly.
+     *
+     * Do not call listener->listen() afterwards, because that causes:
+     *   listen failed: Already listening
+     */
+    auto listen_result = co_await transport_services.listen(
+        taps::LocalEndpoint{"0.0.0.0", static_cast<std::uint16_t>(port)},
+        std::move(properties)
+    );
+
+    if (!listen_result) {
+        std::cerr << "listen failed: " << listen_result.error().message() << "\n";
+        co_return;
+    }
+
+    auto listener = std::move(*listen_result);
+
+    std::cout << "Server listening on port " << port << "\n";
+
+    co_await accept_loop(*listener, payload);
 }
 
 int main(int argc, char* argv[]) {
@@ -143,7 +219,7 @@ int main(int argc, char* argv[]) {
 
     if (argc == 4) {
         threads = std::stoi(argv[3]);
-        if (threads <= 0) {
+        if (threads <= 0 || threads > MAX_THREADS) {
             std::cerr << "Invalid thread count.\n";
             return 1;
         }
@@ -154,72 +230,45 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    FileBuffer file_buffer;
+    FileMapping mapping{};
+
     try {
-        file_buffer = load_file_into_memory(file_path);
+        mapping = map_file_read_only(file_path);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
 
-    const std::span<const char> file_view(file_buffer.data.data(), file_buffer.data.size());
+    const std::span<const char> payload(mapping.data, mapping.size);
 
     try {
         asio::io_context io_context;
+        auto work_guard = asio::make_work_guard(io_context);
 
         asio::co_spawn(
             io_context,
-            [&io_context, port, file_view]() -> asio::awaitable<void> {
-                taps::TransportServices ts(io_context);
-
-                taps::TransportProperties props;
-                props.set(taps::PropertyKey::RELIABILITY, taps::SelectionProperty::REQUIRE);
-                props.set(taps::PropertyKey::PRESERVE_ORDER, taps::SelectionProperty::REQUIRE);
-
-                auto listener_result = co_await ts.listen(
-                    taps::LocalEndpoint{"0.0.0.0", static_cast<std::uint16_t>(port)},
-                    std::move(props)
-                );
-
-                if (!listener_result) {
-                    std::cerr << "listen setup failed: "
-                              << listener_result.error().message() << "\n";
-                    co_return;
-                }
-
-                auto listener = std::move(*listener_result);
-
-                auto start_result = co_await listener->listen();
-                if (!start_result) {
-                    std::cerr << "listen failed: "
-                              << start_result.error().message() << "\n";
-                    co_return;
-                }
-
-                co_await do_accept(*listener, file_view);
-            },
+            listen_loop(io_context, port, payload),
             asio::detached
         );
 
         std::vector<std::thread> pool;
-        pool.reserve(static_cast<std::size_t>(threads > 1 ? threads - 1 : 0));
+        pool.reserve(static_cast<std::size_t>(threads));
 
-        for (int i = 1; i < threads; ++i) {
+        for (int i = 0; i < threads; ++i) {
             pool.emplace_back([&io_context]() {
                 io_context.run();
             });
         }
 
-        io_context.run();
-
-        for (auto& t : pool) {
-            t.join();
+        for (auto& worker : pool) {
+            worker.join();
         }
-
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
+        unmap_file(mapping);
         return 1;
     }
 
+    unmap_file(mapping);
     return 0;
 }

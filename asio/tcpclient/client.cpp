@@ -1,66 +1,97 @@
 /*
- * Copyright (c) 2026 José Antonio García Montañez
+ * Copyright (c) 2026 Jose Antonio Garcia Montanez
  *
  * TCP file client with Asio
  * Minimal raw-byte client for performance and energy measurements.
  */
 
 #include <asio.hpp>
+#include <asio/awaitable.hpp>
+#include <asio/co_spawn.hpp>
+#include <asio/detached.hpp>
+#include <asio/redirect_error.hpp>
+#include <asio/use_awaitable.hpp>
 
 #include <array>
 #include <cstddef>
-#include <exception>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <system_error>
 
 using tcp = asio::ip::tcp;
 
-// Default remote TCP port.
 constexpr int DEFAULT_PORT = 8080;
-
-// Fixed receive buffer size.
 constexpr std::size_t BUFFER_SIZE = 8192;
 
-// Receive raw bytes until EOF and write them directly to disk.
-static asio::awaitable<void> do_download(
+static asio::awaitable<bool> connect_to_server(
+    tcp::socket& socket,
+    const std::string& server_ip,
+    int port
+) {
+    std::error_code ec;
+
+    tcp::endpoint endpoint(
+        asio::ip::make_address(server_ip, ec),
+        static_cast<unsigned short>(port)
+    );
+
+    if (ec) {
+        co_return false;
+    }
+
+    co_await socket.async_connect(endpoint, asio::redirect_error(asio::use_awaitable, ec));
+    co_return !ec;
+}
+
+static asio::awaitable<bool> receive_file(
     tcp::socket& socket,
     const std::string& output_path
 ) {
     std::ofstream out(output_path, std::ios::binary);
     if (!out) {
-        throw std::runtime_error("Failed to open output file: " + output_path);
+        std::cerr << "Failed to open output file: " << output_path << "\n";
+        co_return false;
     }
 
     std::array<char, BUFFER_SIZE> buffer{};
 
     while (true) {
-        const std::size_t bytes_transferred = co_await socket.async_read_some(
-            asio::buffer(buffer.data(), buffer.size()),
-            asio::use_awaitable
+        std::error_code ec;
+        const std::size_t n = co_await socket.async_read_some(
+            asio::buffer(buffer),
+            asio::redirect_error(asio::use_awaitable, ec)
         );
 
-        if (bytes_transferred == 0) {
+        if (n > 0) {
+            out.write(buffer.data(), static_cast<std::streamsize>(n));
+            if (!out) {
+                std::cerr << "Failed to write output file.\n";
+                co_return false;
+            }
+            continue;
+        }
+
+        if (ec == asio::error::eof || ec == asio::error::connection_reset) {
             break;
         }
 
-        out.write(buffer.data(), static_cast<std::streamsize>(bytes_transferred));
-        if (!out) {
-            throw std::runtime_error("Failed to write output file.");
+        if (ec) {
+            std::cerr << "async_read_some failed: " << ec.message() << "\n";
+            co_return false;
+        }
+
+        if (n == 0) {
+            break;
         }
     }
 
     out.close();
-
-    std::error_code close_ec;
-    socket.shutdown(tcp::socket::shutdown_both, close_ec);
-    socket.close(close_ec);
-
-    co_return;
+    co_return true;
 }
 
-// Connect and run one full download session.
-static asio::awaitable<void> do_session(
+static asio::awaitable<bool> run_client(
     const std::string& server_ip,
     int port,
     const std::string& output_path
@@ -68,10 +99,17 @@ static asio::awaitable<void> do_session(
     auto executor = co_await asio::this_coro::executor;
     tcp::socket socket(executor);
 
-    const tcp::endpoint server(asio::ip::make_address(server_ip), static_cast<unsigned short>(port));
+    if (!(co_await connect_to_server(socket, server_ip, port))) {
+        std::cerr << "connect failed\n";
+        co_return false;
+    }
 
-    co_await socket.async_connect(server, asio::use_awaitable);
-    co_await do_download(socket, output_path);
+    const bool ok = co_await receive_file(socket, output_path);
+
+    std::error_code ignored;
+    socket.close(ignored);
+
+    co_return ok;
 }
 
 int main(int argc, char* argv[]) {
@@ -96,28 +134,17 @@ int main(int argc, char* argv[]) {
         output_path = argv[3];
     }
 
-    try {
-        asio::io_context io_context;
-        std::exception_ptr eptr;
+    bool ok = false;
 
-        asio::co_spawn(
-            io_context,
-            do_session(server_ip, port, output_path),
-            [&eptr](std::exception_ptr e) {
-                eptr = e;
-            }
-        );
+    asio::io_context io_context;
+    asio::co_spawn(
+        io_context,
+        [&]() -> asio::awaitable<void> {
+            ok = co_await run_client(server_ip, port, output_path);
+        },
+        asio::detached
+    );
 
-        io_context.run();
-
-        if (eptr) {
-            std::rethrow_exception(eptr);
-        }
-
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
-    }
-
-    return 0;
+    io_context.run();
+    return ok ? 0 : 1;
 }

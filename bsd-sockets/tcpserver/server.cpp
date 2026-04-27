@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 José Antonio García Montañez
+ * Copyright (c) 2026 Jose Antonio Garcia Montanez
  *
  * TCP file server with epoll()
  * Asynchronous BSD sockets server for performance and energy measurements.
@@ -28,29 +28,17 @@
 
 namespace fs = std::filesystem;
 
-// Default TCP listening port.
 constexpr int DEFAULT_PORT = 8080;
-
-// Maximum pending connections in the listen queue.
 constexpr int BACKLOG = 128;
-
-// Maximum number of simultaneously tracked clients per worker thread.
 constexpr std::size_t MAX_CLIENTS_PER_WORKER = 256;
-
-// Maximum supported worker threads.
 constexpr int MAX_WORKER_THREADS = 256;
 
-// Maximum number of events returned by epoll_wait().
-constexpr int MAX_EPOLL_EVENTS = 256;
-
-// Read-only file mapping.
 struct FileMapping {
     int fd = -1;
     const char* data = nullptr;
     std::size_t size = 0;
 };
 
-// Set a file descriptor to non-blocking mode.
 static bool set_nonblocking(int fd) {
     const int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1) {
@@ -60,7 +48,6 @@ static bool set_nonblocking(int fd) {
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
 }
 
-// Open the file and expose it as a read-only memory mapping.
 static FileMapping map_file_read_only(const fs::path& path) {
     FileMapping mapping{};
 
@@ -87,7 +74,6 @@ static FileMapping map_file_read_only(const fs::path& path) {
     return mapping;
 }
 
-// Release a file mapping created by map_file_read_only().
 static void unmap_file(FileMapping& mapping) {
     if (mapping.data != nullptr && mapping.size > 0) {
         munmap(const_cast<char*>(mapping.data), mapping.size);
@@ -102,39 +88,34 @@ static void unmap_file(FileMapping& mapping) {
     mapping.size = 0;
 }
 
-// Try to send as much as possible to one client.
+// Try exactly one non-blocking send() step for one client.
 // Return values:
 //   1  -> all bytes sent
-//   0  -> partial progress, try again later
+//   0  -> partial progress or would block; try again on a later EPOLLOUT
 //  -1  -> socket error / closed
-static int send_all_possible(int fd, std::size_t& sent, std::span<const char> payload) {
-    while (sent < payload.size()) {
-        const ssize_t n = send(fd, payload.data() + sent, payload.size() - sent, MSG_NOSIGNAL);
+static int send_file(int fd, std::size_t& sent, std::span<const char> payload) {
+    if (sent >= payload.size()) {
+        return 1;
+    }
 
-        if (n > 0) {
-            sent += static_cast<std::size_t>(n);
-            continue;
-        }
+    const ssize_t n = send(fd, payload.data() + sent, payload.size() - sent, MSG_NOSIGNAL);
 
-        if (n == 0) {
-            return -1;
-        }
+    if (n > 0) {
+        sent += static_cast<std::size_t>(n);
+        return sent == payload.size() ? 1 : 0;
+    }
 
-        if (errno == EINTR) {
-            continue;
-        }
-
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0;
-        }
-
+    if (n == 0) {
         return -1;
     }
 
-    return 1;
+    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+        return 0;
+    }
+
+    return -1;
 }
 
-// Find one client inside the fixed client array.
 static std::size_t find_client_index(
     const std::array<int, MAX_CLIENTS_PER_WORKER>& client_fds,
     std::size_t client_count,
@@ -149,7 +130,6 @@ static std::size_t find_client_index(
     return client_count;
 }
 
-// Remove one client by swapping it with the last active slot.
 static void remove_client(std::array<int, MAX_CLIENTS_PER_WORKER>& client_fds,
                           std::array<std::size_t, MAX_CLIENTS_PER_WORKER>& client_sent,
                           std::size_t& client_count,
@@ -170,15 +150,10 @@ static void remove_client(std::array<int, MAX_CLIENTS_PER_WORKER>& client_fds,
     --client_count;
 }
 
-// One asynchronous worker thread:
-// - accepts new clients from the shared listening socket,
-// - registers each client in epoll,
-// - sends the mapped payload only when a socket is writable,
-// - closes clients when done or on error.
-static void worker_loop(int listen_fd, std::span<const char> payload) {
+static void accept_loop(int listen_fd, std::span<const char> payload) {
     std::array<int, MAX_CLIENTS_PER_WORKER> client_fds{};
     std::array<std::size_t, MAX_CLIENTS_PER_WORKER> client_sent{};
-    std::array<epoll_event, MAX_EPOLL_EVENTS> events{};
+    std::array<epoll_event, MAX_CLIENTS_PER_WORKER> events{};
 
     std::size_t client_count = 0;
 
@@ -202,7 +177,12 @@ static void worker_loop(int listen_fd, std::span<const char> payload) {
     }
 
     while (true) {
-        const int ready = epoll_wait(epoll_fd, events.data(), MAX_EPOLL_EVENTS, -1);
+        const int ready = epoll_wait(
+            epoll_fd,
+            events.data(),
+            static_cast<int>(events.size()),
+            -1
+        );
 
         if (ready == -1) {
             if (errno == EINTR) {
@@ -266,7 +246,7 @@ static void worker_loop(int listen_fd, std::span<const char> payload) {
             }
 
             if (revents & EPOLLOUT) {
-                const int status = send_all_possible(fd, client_sent[index], payload);
+                const int status = send_file(fd, client_sent[index], payload);
 
                 if (status == 1 || status == -1) {
                     remove_client(client_fds, client_sent, client_count, index, epoll_fd);
@@ -342,15 +322,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-#ifdef SO_REUSEPORT
-    if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) == -1) {
-        std::perror("setsockopt SO_REUSEPORT");
-        close(listen_fd);
-        unmap_file(mapping);
-        return 1;
-    }
-#endif
-
     if (!set_nonblocking(listen_fd)) {
         std::perror("fcntl");
         close(listen_fd);
@@ -380,7 +351,7 @@ int main(int argc, char* argv[]) {
     std::array<std::thread, MAX_WORKER_THREADS> workers{};
 
     for (int i = 0; i < threads; ++i) {
-        workers[static_cast<std::size_t>(i)] = std::thread(worker_loop, listen_fd, payload);
+        workers[static_cast<std::size_t>(i)] = std::thread(accept_loop, listen_fd, payload);
     }
 
     for (int i = 0; i < threads; ++i) {

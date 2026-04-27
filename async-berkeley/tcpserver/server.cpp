@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 José Antonio García Montañez
+ * Copyright (c) 2026 Jose Antonio Garcia Montanez
  *
  * TCP file server with async-berkeley
  * Minimal raw-byte server for performance and energy measurements.
@@ -30,26 +30,17 @@
 namespace fs = std::filesystem;
 using SocketHandle = io::socket::socket_handle;
 
-// Default TCP listening port.
 constexpr int DEFAULT_PORT = 8080;
-
-// Maximum pending connections in the kernel listen queue.
 constexpr int BACKLOG = 128;
-
-// Hard cap for worker threads.
 constexpr int MAX_THREADS = 256;
-
-// Maximum number of active clients handled by one worker thread.
 constexpr std::size_t MAX_ACTIVE_CLIENTS = 4096;
 
-// Read-only file mapping used by the server.
 struct FileMapping {
     int fd = -1;
     const char* data = nullptr;
     std::size_t size = 0;
 };
 
-// Set a socket to non-blocking mode.
 static bool set_nonblocking(SocketHandle& fd) {
     const int flags = io::fcntl(fd, F_GETFL, 0);
     if (flags == -1) {
@@ -59,13 +50,10 @@ static bool set_nonblocking(SocketHandle& fd) {
     return io::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
 }
 
-// Return the native descriptor so poll() can use it.
 static int native_fd(const SocketHandle& fd) {
     return static_cast<int>(fd);
 }
 
-// Open the file and map it read-only into memory.
-// This keeps disk I/O out of the measured transfer path.
 static FileMapping map_file_read_only(const fs::path& path) {
     FileMapping mapping{};
 
@@ -92,7 +80,6 @@ static FileMapping map_file_read_only(const fs::path& path) {
     return mapping;
 }
 
-// Release the file mapping.
 static void unmap_file(FileMapping& mapping) {
     if (mapping.data != nullptr && mapping.size > 0) {
         munmap(const_cast<char*>(mapping.data), mapping.size);
@@ -107,38 +94,36 @@ static void unmap_file(FileMapping& mapping) {
     mapping.size = 0;
 }
 
-// Send as many remaining bytes as possible to one client.
+// Try exactly one non-blocking sendmsg() step for one client.
 // Return values:
 //   1 -> full transfer completed
-//   0 -> would block, continue later
+//   0 -> partial progress or would block; continue later
 //  -1 -> fatal error
-static int send_all_possible(SocketHandle& fd, std::size_t& sent, std::span<const char> payload) {
-    while (sent < payload.size()) {
-        io::socket::socket_message<> msg;
-        msg.buffers.emplace_back(
-            const_cast<char*>(payload.data() + sent),
-            payload.size() - sent
-        );
-
-        const ssize_t n = io::sendmsg(fd, msg, 0);
-
-        if (n > 0) {
-            sent += static_cast<std::size_t>(n);
-            continue;
-        }
-
-        if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            return 0;
-        }
-
-        return -1;
+static int send_file(SocketHandle& fd, std::size_t& sent, std::span<const char> payload) {
+    if (sent >= payload.size()) {
+        return 1;
     }
 
-    return 1;
+    io::socket::socket_message<> msg;
+    msg.buffers.emplace_back(
+        const_cast<char*>(payload.data() + sent),
+        payload.size() - sent
+    );
+
+    const ssize_t n = io::sendmsg(fd, msg, 0);
+
+    if (n > 0) {
+        sent += static_cast<std::size_t>(n);
+        return sent == payload.size() ? 1 : 0;
+    }
+
+    if (n == -1 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return 0;
+    }
+
+    return -1;
 }
 
-// Accept as many new clients as possible for this worker.
-// The accepted clients are stored in the worker-local arrays.
 static void accept_new_clients(
     SocketHandle& server_fd,
     std::array<SocketHandle, MAX_ACTIVE_CLIENTS>& client_fds,
@@ -171,9 +156,7 @@ static void accept_new_clients(
     }
 }
 
-// Worker thread loop.
-// Each worker polls the shared listening socket plus its own active clients.
-static void worker_loop(SocketHandle& server_fd, std::span<const char> payload) {
+static void accept_loop(SocketHandle& server_fd, std::span<const char> payload) {
     std::array<SocketHandle, MAX_ACTIVE_CLIENTS> client_fds{};
     std::array<std::size_t, MAX_ACTIVE_CLIENTS> client_sent{};
     std::array<pollfd, MAX_ACTIVE_CLIENTS + 1> pollfds{};
@@ -200,9 +183,6 @@ static void worker_loop(SocketHandle& server_fd, std::span<const char> payload) 
             break;
         }
 
-        // If the listening socket is readable, this worker tries to accept
-        // as many new clients as possible. Since all workers share the same
-        // listening socket, the kernel naturally distributes accepted work.
         if (pollfds[0].revents & POLLIN) {
             accept_new_clients(server_fd, client_fds, client_sent, client_count);
         }
@@ -213,7 +193,7 @@ static void worker_loop(SocketHandle& server_fd, std::span<const char> payload) 
             bool remove_client = false;
 
             if (revents & POLLOUT) {
-                const int status = send_all_possible(client_fds[i], client_sent[i], payload);
+                const int status = send_file(client_fds[i], client_sent[i], payload);
 
                 if (status == 1 || status == -1) {
                     client_fds[i] = {};
@@ -324,7 +304,7 @@ int main(int argc, char* argv[]) {
 
     for (int i = 0; i < threads; ++i) {
         pool[static_cast<std::size_t>(i)] = std::thread(
-            worker_loop,
+            accept_loop,
             std::ref(server_fd),
             payload
         );
