@@ -92,7 +92,7 @@ That protocol belonged to an earlier version. The current version is intentional
 ## Project structure
 
 ```text
-becnhmark_async_berkeley/
+async-berkeley/
 ├── benchmarks/
 │   ├── CMakeLists.txt
 │   └── bench_tcp.cpp

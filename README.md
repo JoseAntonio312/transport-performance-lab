@@ -26,12 +26,11 @@ In addition to those per-project READMEs, the repository root provides **global 
 
 The repository is organized as a collection of transport-specific benchmark projects, for example:
 
-- `asio-standalone`
-- `benchmark_taps`
-- `benchmark_async_berkeley`
-- `boost-asio`
+- `asio`
+- `taps-asio`
+- `async-berkeley`
 - `bsd-sockets`
-- `corosio`
+- `capy-corosio`
 
 Each subproject may contain:
 
@@ -64,12 +63,11 @@ This makes it possible to:
 
 The global scripts are designed to iterate over these directories when present:
 
-- `asio-standalone`
-- `benchmark_taps`
-- `benchmark_async_berkeley`
-- `boost-asio`
+- `asio`
+- `taps-asio`
+- `async-berkeley`
 - `bsd-sockets`
-- `corosio`
+- `capy-corosio`
 
 If a directory does not exist, or if the expected script is missing, it is skipped and reported.
 

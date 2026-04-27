@@ -1,4 +1,4 @@
-# COROSIO - File transfer and benchmarking in C++23
+# CAPY-COROSIO - File transfer and benchmarking in C++23
 
 This project provides a **C++23** experimental baseline for studying file transfer over **Corosio**, with a strong focus on:
 
@@ -40,7 +40,7 @@ This version is intentionally designed to reduce experimental noise:
 ## Project structure
 
 ```text
-corosio/
+capy-corosio/
 ├── benchmarks/
 │   ├── CMakeLists.txt
 │   └── bench_tcp.cpp

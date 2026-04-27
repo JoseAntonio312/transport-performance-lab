@@ -1,4 +1,4 @@
-# ASIO STANDALONE - File Transfer and Benchmarking in C++23
+# ASIO - File Transfer and Benchmarking in C++23
 
 This project provides a **C++23** experimental baseline to study file transfer over **standalone Asio**, with a focus on:
 

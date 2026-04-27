@@ -1,4 +1,4 @@
-# BSD SOCKETS POLL - File transfer and benchmarking in C++23
+# BSD-sockets - File transfer and benchmarking in C++23
 
 This project provides a **C++23** experimental baseline for studying file transfer over **BSD sockets with `poll()`**, with a focus on:
 
@@ -13,12 +13,20 @@ This project provides a **C++23** experimental baseline for studying file transf
 
 The goal is to keep the implementation as simple, reproducible, and efficient as possible so that benchmark results are driven by the transport mechanism itself rather than by unnecessary abstraction overhead.
 
-This current BSD sockets variant is aligned with the simplified raw-byte design used in the other implementations:
+This BSD sockets variant is aligned with the simplified raw-byte design used in the other implementations:
 
 - the server sends **raw file bytes only**;
 - the client receives bytes **until EOF**;
 - there is **no custom application header**;
 - the benchmark downloads the full payload **until the connection is closed**.
+
+In plots, reports, and comparison tables, this implementation should be labeled as:
+
+```text
+bsd-sockets
+```
+
+The word `benchmark` should not appear in the plotted implementation labels, since all plotted entries are benchmarked variants.
 
 ---
 
@@ -33,6 +41,18 @@ The current objective of this project is to provide a BSD sockets implementation
 - differences between binaries compiled with **G++** and **Clang++**.
 
 At this stage, the implementation is intentionally kept close to the simplified raw-byte design used in the rest of the benchmark suite so that comparisons across transport technologies remain as fair as possible.
+
+The expected implementation labels across the full comparison suite are:
+
+```text
+bsd-sockets
+asio
+capy-corosio
+taps-asio
+asyncberkeley
+```
+
+These names are the labels that should appear in generated figures, legends, CSV summaries, and PDF reports.
 
 ---
 
@@ -67,9 +87,47 @@ The benchmark:
 - acts as a minimal client;
 - connects to the real server;
 - receives bytes until EOF;
-- measures one full download per iteration using **Google Benchmark**.
+- does not write the downloaded data to disk;
+- measures one full download per benchmark iteration using **Google Benchmark**.
 
-This makes the BSD sockets implementation more directly comparable to the simplified Corosio version.
+This makes the BSD sockets implementation more directly comparable to the simplified Corosio version and to the other raw-byte transfer implementations.
+
+---
+
+## Asynchronous model used by this variant
+
+Although this project is named `bsd-sockets`, the current server and client are not written as purely blocking sequential programs.
+
+The implementation uses:
+
+```text
+BSD sockets + O_NONBLOCK + poll()
+```
+
+This means that the sockets are standard BSD/POSIX sockets, but the I/O model is readiness-based and non-blocking.
+
+### Server-side concurrency
+
+The server uses:
+
+- a non-blocking listening socket;
+- non-blocking accepted client sockets;
+- `poll()` to wait for readable/writable file descriptors;
+- worker threads;
+- one client set per worker;
+- per-client send progress tracked with byte offsets.
+
+Each client receives the same mapped file contents. The server closes the client socket after the full payload has been sent.
+
+### Client-side behavior
+
+The client also uses:
+
+- a non-blocking socket;
+- `poll()` to wait for connection completion;
+- `poll()` to wait for readable data when `recv()` would block.
+
+Therefore, this implementation should be understood as a **BSD sockets + poll readiness-based implementation**, not as a purely blocking sequential server.
 
 ---
 
@@ -154,6 +212,14 @@ The Python script:
 - collects JSON benchmark outputs;
 - computes aggregated statistics;
 - generates CSV files, plots, and PDF reports.
+
+The automation and plotting pipeline should normalize the displayed implementation name to:
+
+```text
+bsd-sockets
+```
+
+For example, internal executable names such as `bench_tcp`, `BM_TCP_FileDownload`, or folder names containing `benchmark` should not be used directly as final plot labels.
 
 ---
 
@@ -301,11 +367,13 @@ A single benchmark case consists of:
 
 A concurrent campaign launches multiple `bench_tcp` processes in parallel, for example:
 
-- 1 parallel benchmark process
-- 2 parallel benchmark processes
-- 4 parallel benchmark processes
-- 8 parallel benchmark processes
-- 16 parallel benchmark processes
+- 1 parallel benchmark process;
+- 2 parallel benchmark processes;
+- 4 parallel benchmark processes;
+- 8 parallel benchmark processes;
+- 16 parallel benchmark processes.
+
+This is the relevant scenario for observing whether the non-blocking readiness-based server improves its behavior when the number of simultaneous service requests increases.
 
 ### Compiler comparison
 
@@ -346,6 +414,25 @@ These typically include:
 - throughput plots;
 - per-process completion plots;
 - GCC vs Clang comparison plots.
+
+Plot labels should use implementation names only. Recommended labels are:
+
+```text
+bsd-sockets
+asio
+capy-corosio
+taps-asio
+asyncberkeley
+```
+
+Avoid labels such as:
+
+```text
+benchmark-bsd-sockets
+bsd-sockets-benchmark
+BM_TCP_FileDownload
+bench_tcp
+```
 
 ### Reports
 
@@ -415,7 +502,9 @@ Additional recommendations:
 - keep the machine thermally stable before long campaigns;
 - repeat each case multiple times;
 - keep the same methodology across GCC and Clang;
-- use the same served file for all comparable runs.
+- use the same served file for all comparable runs;
+- compare implementations under the same number of concurrent benchmark processes;
+- keep implementation labels stable across all generated figures and reports.
 
 ---
 
@@ -435,7 +524,8 @@ For the current server implementation:
 - file data is exposed through a read-only memory mapping;
 - receive buffers use fixed-size stack storage where appropriate;
 - worker-side client tracking avoids high-level abstractions as much as possible;
-- concurrency is implemented with plain OS threads rather than coroutines.
+- concurrency is implemented with plain OS threads rather than coroutines;
+- readiness-based I/O is implemented with `poll()` and non-blocking sockets.
 
 ---
 

@@ -1,4 +1,4 @@
-# TAPS - File Transfer and Benchmarking in C++23
+# TAPS-ASIO - File Transfer and Benchmarking in C++23
 
 This project provides an experimental **C++23** codebase to study file transfer over **TAPS**, with a focus on:
 
@@ -82,7 +82,7 @@ That said, the **final memory behavior is still partially constrained by the TAP
 ## Project structure
 
 ```text
-benchmark_taps/
+taps-asio/
 ├── benchmarks/
 │   ├── CMakeLists.txt
 │   └── bench_tcp.cpp
