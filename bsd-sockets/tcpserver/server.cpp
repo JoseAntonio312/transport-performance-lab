@@ -1,14 +1,14 @@
 /*
  * Copyright (c) 2026 José Antonio García Montañez
  *
- * TCP file server with poll()
- * Minimal raw-byte server for performance and energy measurements.
+ * TCP file server with epoll()
+ * Asynchronous BSD sockets server for performance and energy measurements.
  */
 
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
-#include <poll.h>
+#include <sys/epoll.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <iostream>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -38,6 +39,9 @@ constexpr std::size_t MAX_CLIENTS_PER_WORKER = 256;
 
 // Maximum supported worker threads.
 constexpr int MAX_WORKER_THREADS = 256;
+
+// Maximum number of events returned by epoll_wait().
+constexpr int MAX_EPOLL_EVENTS = 256;
 
 // Read-only file mapping.
 struct FileMapping {
@@ -105,7 +109,7 @@ static void unmap_file(FileMapping& mapping) {
 //  -1  -> socket error / closed
 static int send_all_possible(int fd, std::size_t& sent, std::span<const char> payload) {
     while (sent < payload.size()) {
-        const ssize_t n = send(fd, payload.data() + sent, payload.size() - sent, 0);
+        const ssize_t n = send(fd, payload.data() + sent, payload.size() - sent, MSG_NOSIGNAL);
 
         if (n > 0) {
             sent += static_cast<std::size_t>(n);
@@ -130,12 +134,31 @@ static int send_all_possible(int fd, std::size_t& sent, std::span<const char> pa
     return 1;
 }
 
+// Find one client inside the fixed client array.
+static std::size_t find_client_index(
+    const std::array<int, MAX_CLIENTS_PER_WORKER>& client_fds,
+    std::size_t client_count,
+    int fd
+) {
+    for (std::size_t i = 0; i < client_count; ++i) {
+        if (client_fds[i] == fd) {
+            return i;
+        }
+    }
+
+    return client_count;
+}
+
 // Remove one client by swapping it with the last active slot.
 static void remove_client(std::array<int, MAX_CLIENTS_PER_WORKER>& client_fds,
                           std::array<std::size_t, MAX_CLIENTS_PER_WORKER>& client_sent,
                           std::size_t& client_count,
-                          std::size_t index) {
-    close(client_fds[index]);
+                          std::size_t index,
+                          int epoll_fd) {
+    const int fd = client_fds[index];
+
+    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+    close(fd);
 
     if (index + 1 != client_count) {
         client_fds[index] = client_fds[client_count - 1];
@@ -147,96 +170,117 @@ static void remove_client(std::array<int, MAX_CLIENTS_PER_WORKER>& client_fds,
     --client_count;
 }
 
-// One worker thread:
+// One asynchronous worker thread:
 // - accepts new clients from the shared listening socket,
-// - sends the mapped payload to its own client set,
+// - registers each client in epoll,
+// - sends the mapped payload only when a socket is writable,
 // - closes clients when done or on error.
 static void worker_loop(int listen_fd, std::span<const char> payload) {
     std::array<int, MAX_CLIENTS_PER_WORKER> client_fds{};
     std::array<std::size_t, MAX_CLIENTS_PER_WORKER> client_sent{};
-    std::array<pollfd, 1 + MAX_CLIENTS_PER_WORKER> pollfds{};
+    std::array<epoll_event, MAX_EPOLL_EVENTS> events{};
+
     std::size_t client_count = 0;
 
     client_fds.fill(-1);
     client_sent.fill(0);
 
+    const int epoll_fd = epoll_create1(0);
+    if (epoll_fd == -1) {
+        std::cerr << "epoll_create1 failed: " << std::strerror(errno) << "\n";
+        return;
+    }
+
+    epoll_event listen_event{};
+    listen_event.events = EPOLLIN;
+    listen_event.data.fd = listen_fd;
+
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &listen_event) == -1) {
+        std::cerr << "epoll_ctl listen_fd failed: " << std::strerror(errno) << "\n";
+        close(epoll_fd);
+        return;
+    }
+
     while (true) {
-        pollfds[0].fd = listen_fd;
-        pollfds[0].events = POLLIN;
-        pollfds[0].revents = 0;
-
-        for (std::size_t i = 0; i < client_count; ++i) {
-            pollfds[i + 1].fd = client_fds[i];
-            pollfds[i + 1].events = POLLOUT;
-            pollfds[i + 1].revents = 0;
-        }
-
-        const int ready = poll(pollfds.data(), static_cast<nfds_t>(1 + client_count), -1);
+        const int ready = epoll_wait(epoll_fd, events.data(), MAX_EPOLL_EVENTS, -1);
 
         if (ready == -1) {
             if (errno == EINTR) {
                 continue;
             }
+
+            std::cerr << "epoll_wait failed: " << std::strerror(errno) << "\n";
             break;
         }
 
-        // Accept as many queued connections as possible in this thread.
-        if (pollfds[0].revents & POLLIN) {
-            while (true) {
-                const int client_fd = accept(listen_fd, nullptr, nullptr);
+        for (int event_index = 0; event_index < ready; ++event_index) {
+            const int fd = events[static_cast<std::size_t>(event_index)].data.fd;
+            const std::uint32_t revents = events[static_cast<std::size_t>(event_index)].events;
 
-                if (client_fd == -1) {
-                    if (errno == EINTR) {
-                        continue;
-                    }
+            if (fd == listen_fd) {
+                while (client_count < MAX_CLIENTS_PER_WORKER) {
+                    const int client_fd = accept(listen_fd, nullptr, nullptr);
 
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    if (client_fd == -1) {
+                        if (errno == EINTR) {
+                            continue;
+                        }
+
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            break;
+                        }
+
                         break;
                     }
 
-                    break;
+                    if (!set_nonblocking(client_fd)) {
+                        close(client_fd);
+                        continue;
+                    }
+
+                    epoll_event client_event{};
+                    client_event.events = EPOLLOUT | EPOLLERR | EPOLLHUP;
+                    client_event.data.fd = client_fd;
+
+                    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &client_event) == -1) {
+                        close(client_fd);
+                        continue;
+                    }
+
+                    client_fds[client_count] = client_fd;
+                    client_sent[client_count] = 0;
+                    ++client_count;
                 }
 
-                if (!set_nonblocking(client_fd)) {
-                    close(client_fd);
-                    continue;
-                }
-
-                if (client_count >= MAX_CLIENTS_PER_WORKER) {
-                    close(client_fd);
-                    continue;
-                }
-
-                client_fds[client_count] = client_fd;
-                client_sent[client_count] = 0;
-                ++client_count;
-            }
-        }
-
-        // Process writable clients.
-        std::size_t i = 0;
-        while (i < client_count) {
-            const short revents = pollfds[i + 1].revents;
-
-            if (revents & POLLOUT) {
-                const int status = send_all_possible(client_fds[i], client_sent[i], payload);
-
-                if (status == 1 || status == -1) {
-                    remove_client(client_fds, client_sent, client_count, i);
-                    continue;
-                }
-            } else if (revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                remove_client(client_fds, client_sent, client_count, i);
                 continue;
             }
 
-            ++i;
+            const std::size_t index = find_client_index(client_fds, client_count, fd);
+            if (index == client_count) {
+                continue;
+            }
+
+            if (revents & (EPOLLERR | EPOLLHUP)) {
+                remove_client(client_fds, client_sent, client_count, index, epoll_fd);
+                continue;
+            }
+
+            if (revents & EPOLLOUT) {
+                const int status = send_all_possible(fd, client_sent[index], payload);
+
+                if (status == 1 || status == -1) {
+                    remove_client(client_fds, client_sent, client_count, index, epoll_fd);
+                    continue;
+                }
+            }
         }
     }
 
     for (std::size_t i = 0; i < client_count; ++i) {
         close(client_fds[i]);
     }
+
+    close(epoll_fd);
 }
 
 int main(int argc, char* argv[]) {
@@ -273,6 +317,7 @@ int main(int argc, char* argv[]) {
     }
 
     FileMapping mapping{};
+
     try {
         mapping = map_file_read_only(file_path);
     } catch (const std::exception& e) {
@@ -296,6 +341,15 @@ int main(int argc, char* argv[]) {
         unmap_file(mapping);
         return 1;
     }
+
+#ifdef SO_REUSEPORT
+    if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) == -1) {
+        std::perror("setsockopt SO_REUSEPORT");
+        close(listen_fd);
+        unmap_file(mapping);
+        return 1;
+    }
+#endif
 
     if (!set_nonblocking(listen_fd)) {
         std::perror("fcntl");

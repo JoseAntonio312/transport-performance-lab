@@ -31,11 +31,11 @@ RUN_LOG="$LOGS_DIR/run_log.txt"
 RUN_MANIFEST_JSON="$MANIFESTS_DIR/run_manifest.json"
 
 PROJECT_DIRS=(
-  "asio-standalone"
-  "benchmark_taps"
-  "benchmark_async_berkeley"
+  "asio"
+  #"taps-asio"
+  "async-berkeley"
   "bsd-sockets"
-  "corosio"
+  "capy-corosio"
 )
 
 SETTLE_SECONDS_BEFORE="${SETTLE_SECONDS_BEFORE:-20}"

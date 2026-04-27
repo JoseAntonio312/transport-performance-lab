@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 José Antonio García Montañez
  *
- * BSD sockets file download benchmark with poll()
+ * Asyncronous BSD sockets file download benchmark with epoll()
  * Minimal raw-byte benchmark for performance and energy measurements.
  */
 

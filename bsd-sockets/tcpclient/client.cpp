@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 José Antonio García Montañez
  *
- * TCP file client with poll()
+ * Asyncronous BSD sockets client for file download benchmark with epoll()
  * Minimal raw-byte client for performance and energy measurements.
  */
 
