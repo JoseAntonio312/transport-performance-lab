@@ -93,7 +93,7 @@ static void unmap_file(FileMapping& mapping) {
 //   1  -> all bytes sent
 //   0  -> partial progress or would block; try again on a later EPOLLOUT
 //  -1  -> socket error / closed
-static int send_file(int fd, std::size_t& sent, std::span<const char> payload) {
+static int send_file_step(int fd, std::size_t& sent, std::span<const char> payload) {
     if (sent >= payload.size()) {
         return 1;
     }
@@ -114,6 +114,10 @@ static int send_file(int fd, std::size_t& sent, std::span<const char> payload) {
     }
 
     return -1;
+}
+
+static int serve_client_step(int fd, std::size_t& sent, std::span<const char> payload) {
+    return send_file_step(fd, sent, payload);
 }
 
 static std::size_t find_client_index(
@@ -246,7 +250,7 @@ static void accept_loop(int listen_fd, std::span<const char> payload) {
             }
 
             if (revents & EPOLLOUT) {
-                const int status = send_file(fd, client_sent[index], payload);
+                const int status = serve_client_step(fd, client_sent[index], payload);
 
                 if (status == 1 || status == -1) {
                     remove_client(client_fds, client_sent, client_count, index, epoll_fd);

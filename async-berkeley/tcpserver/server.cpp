@@ -99,7 +99,7 @@ static void unmap_file(FileMapping& mapping) {
 //   1 -> full transfer completed
 //   0 -> partial progress or would block; continue later
 //  -1 -> fatal error
-static int send_file(SocketHandle& fd, std::size_t& sent, std::span<const char> payload) {
+static int send_file_step(SocketHandle& fd, std::size_t& sent, std::span<const char> payload) {
     if (sent >= payload.size()) {
         return 1;
     }
@@ -122,6 +122,10 @@ static int send_file(SocketHandle& fd, std::size_t& sent, std::span<const char> 
     }
 
     return -1;
+}
+
+static int serve_client_step(SocketHandle& fd, std::size_t& sent, std::span<const char> payload) {
+    return send_file_step(fd, sent, payload);
 }
 
 static void accept_new_clients(
@@ -193,7 +197,7 @@ static void accept_loop(SocketHandle& server_fd, std::span<const char> payload) 
             bool remove_client = false;
 
             if (revents & POLLOUT) {
-                const int status = send_file(client_fds[i], client_sent[i], payload);
+                const int status = serve_client_step(client_fds[i], client_sent[i], payload);
 
                 if (status == 1 || status == -1) {
                     client_fds[i] = {};
