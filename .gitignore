@@ -1,19 +1,30 @@
-
-# Build artifacts
 build/
-**/build/
+build-*/
+cmake-build-*/
 
-build-clang/
-**/build-clang/
-
-build-gcc/
-**/build-gcc/
+install/
+install-*/
 
 results/
-**/results/
-
 global_results/
-**/global_results/
+raw/
+plots/
+reports/
+summaries/
+csv/
 
-/files/*
-!/files/.gitkeep
+*.json
+*.csv
+*.pdf
+*.png
+*.zip
+*.rar
+*.bin
+*.dat
+*.log
+
+*.o
+*.a
+*.so
+*.dylib
+*.exe
