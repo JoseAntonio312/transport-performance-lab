@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <span>
 #include <string>
 #include <system_error>
 
@@ -47,7 +48,7 @@ static capy::task<bool> run_benchmark_client(
     corosio::io_context& context,
     const char* ip,
     int port,
-    std::array<char, BUFFER_SIZE>& buffer,
+    std::span<char> buffer,
     std::uint64_t& total_bytes
 ) {
     total_bytes = 0;
@@ -115,7 +116,7 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
             context,
             ip,
             port,
-            buffer,
+            std::span<char>(buffer.data(), buffer.size()),
             downloaded_bytes
         );
 

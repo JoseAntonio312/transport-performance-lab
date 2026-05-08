@@ -1,176 +1,207 @@
 /*
  * Copyright (c) 2026 Jose Antonio Garcia Montanez
  *
- * Corosio raw-byte file download benchmark
- * Minimal benchmark version for performance and energy measurements.
+ * TCP file server with Corosio
+ * Minimal raw-byte server for performance and energy measurements.
  */
 
-#include <benchmark/benchmark.h>
-
-#include <array>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <memory>
 #include <span>
 #include <string>
-#include <system_error>
+#include <thread>
+#include <vector>
 
 #include <boost/capy/buffers.hpp>
 #include <boost/capy/ex/run_async.hpp>
 #include <boost/capy/task.hpp>
 #include <boost/corosio.hpp>
 
+namespace fs = std::filesystem;
 namespace corosio = boost::corosio;
 namespace capy = boost::capy;
 
 constexpr int DEFAULT_PORT = 8080;
-constexpr std::size_t BUFFER_SIZE = 8192;
+constexpr int BACKLOG = 128;
+constexpr int MAX_THREADS = 256;
+constexpr std::uint64_t MAX_FILE_SIZE = 2ull * 1024ull * 1024ull * 1024ull;
 
-static int g_port = DEFAULT_PORT;
+struct FileBuffer {
+    std::unique_ptr<char[]> data;
+    std::size_t valid_size = 0;
+};
 
-static bool is_clean_eof(const std::error_code& ec) {
-    if (!ec) {
-        return false;
+static FileBuffer load_file_into_memory(const fs::path& path) {
+    const std::uint64_t file_size_u64 = fs::file_size(path);
+
+    if (file_size_u64 > MAX_FILE_SIZE) {
+        throw std::runtime_error("File is larger than MAX_FILE_SIZE.");
     }
 
-    if (ec == std::errc::connection_reset) {
-        return true;
+    const std::size_t file_size = static_cast<std::size_t>(file_size_u64);
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Failed to open file: " + path.string());
     }
 
-    const std::string message = ec.message();
-    return message == "End of file" ||
-           message == "end of file" ||
-           message == "EOF" ||
-           message == "eof";
+    FileBuffer file_buffer;
+    file_buffer.valid_size = file_size;
+
+    if (file_size > 0) {
+        file_buffer.data = std::make_unique<char[]>(file_size);
+
+        file.read(file_buffer.data.get(), static_cast<std::streamsize>(file_size));
+        if (!file) {
+            throw std::runtime_error("Failed to read file contents.");
+        }
+    }
+
+    return file_buffer;
 }
 
-static capy::task<bool> run_benchmark_client(
-    corosio::io_context& context,
-    const char* ip,
-    int port,
-    std::span<char> buffer,
-    std::uint64_t& total_bytes
+static capy::task<void> send_file(
+    corosio::tcp_socket& sock,
+    std::span<const char> file_view
 ) {
-    total_bytes = 0;
+    std::size_t sent = 0;
 
-    corosio::tcp_socket socket(context);
-    socket.open();
-
-    auto [connect_ec] = co_await socket.connect(
-        corosio::endpoint(
-            corosio::endpoint(ip),
-            static_cast<unsigned short>(port)
-        )
-    );
-
-    if (connect_ec) {
-        co_return false;
-    }
-
-    while (true) {
-        auto [read_ec, n] = co_await socket.read_some(
-            capy::mutable_buffer(buffer.data(), buffer.size())
+    while (sent < file_view.size()) {
+        auto [ec, n] = co_await sock.write_some(
+            capy::const_buffer(file_view.data() + sent, file_view.size() - sent)
         );
 
-        if (n > 0) {
-            total_bytes += static_cast<std::uint64_t>(n);
+        if (ec || n == 0) {
+            break;
+        }
 
-            benchmark::DoNotOptimize(buffer.data());
-            benchmark::DoNotOptimize(total_bytes);
-            benchmark::ClobberMemory();
+        sent += static_cast<std::size_t>(n);
+    }
 
+    co_return;
+}
+
+static capy::task<void> serve_client(
+    corosio::tcp_socket sock,
+    std::span<const char> file_view
+) {
+    co_await send_file(sock, file_view);
+    co_return;
+}
+
+static capy::task<void> accept_loop(
+    corosio::io_context& ctx,
+    corosio::tcp_acceptor& acceptor,
+    std::span<const char> file_view
+) {
+    while (true) {
+        corosio::tcp_socket sock(ctx);
+        auto [ec] = co_await acceptor.accept(sock);
+
+        if (ec) {
             continue;
         }
 
-        if (!read_ec && n == 0) {
-            break;
-        }
-
-        if (read_ec) {
-            if (total_bytes > 0 && is_clean_eof(read_ec)) {
-                break;
-            }
-
-            co_return false;
-        }
+        capy::run_async(ctx.get_executor())(
+            serve_client(std::move(sock), file_view)
+        );
     }
-
-    co_return total_bytes > 0;
 }
 
-static void BM_TCP_FileDownload(benchmark::State& state) {
-    constexpr const char* ip = "127.0.0.1";
-    const int port = g_port;
-
-    std::uint64_t bytes_processed = 0;
-    std::uint64_t last_downloaded_bytes = 0;
-
-    for (auto _ : state) {
-        (void)_;
-
-        corosio::io_context context;
-        std::array<char, BUFFER_SIZE> buffer{};
-        std::uint64_t downloaded_bytes = 0;
-
-        auto task = run_benchmark_client(
-            context,
-            ip,
-            port,
-            std::span<char>(buffer.data(), buffer.size()),
-            downloaded_bytes
-        );
-
-        capy::run_async(context.get_executor())(
-            std::move(task)
-        );
-
-        context.run();
-
-        const bool ok = downloaded_bytes > 0;
-
-        if (!ok) {
-            state.SkipWithError("Download failed.");
-            break;
-        }
-
-        bytes_processed += downloaded_bytes;
-        last_downloaded_bytes = downloaded_bytes;
-    }
-
-    state.SetBytesProcessed(static_cast<int64_t>(bytes_processed));
-    state.counters["downloaded_bytes"] = static_cast<double>(last_downloaded_bytes);
+static void run_io_context(corosio::io_context& ctx) {
+    ctx.run();
 }
 
-BENCHMARK(BM_TCP_FileDownload)
-    ->Unit(benchmark::kMillisecond)
-    ->Iterations(1)
-    ->UseRealTime();
+int main(int argc, char* argv[]) {
+    std::signal(SIGPIPE, SIG_IGN);
 
-int main(int argc, char** argv) {
-    const std::string prefix = "--server_port=";
-
-    int filtered_argc = 1;
-
-    for (int i = 1; i < argc; ++i) {
-        const std::string arg = argv[i];
-
-        if (arg.rfind(prefix, 0) == 0) {
-            g_port = std::stoi(arg.substr(prefix.size()));
-        } else {
-            argv[filtered_argc++] = argv[i];
-        }
-    }
-
-    argv[filtered_argc] = nullptr;
-
-    benchmark::Initialize(&filtered_argc, argv);
-
-    if (benchmark::ReportUnrecognizedArguments(filtered_argc, argv)) {
+    if (argc < 2 || argc > 4) {
+        std::cerr << "Usage: " << argv[0] << " <file_path> [port] [threads]\n";
         return EXIT_FAILURE;
     }
 
-    benchmark::RunSpecifiedBenchmarks();
-    benchmark::Shutdown();
+    const fs::path file_path = argv[1];
+    int port = DEFAULT_PORT;
+    int threads = 1;
 
-    return EXIT_SUCCESS;
+    if (argc >= 3) {
+        port = std::stoi(argv[2]);
+        if (port <= 0 || port > 65535) {
+            std::cerr << "Invalid port.\n";
+            return EXIT_FAILURE;
+        }
+    }
+
+    if (argc == 4) {
+        threads = std::stoi(argv[3]);
+        if (threads <= 0 || threads > MAX_THREADS) {
+            std::cerr << "Invalid thread count.\n";
+            return EXIT_FAILURE;
+        }
+    }
+
+    if (!fs::exists(file_path) || !fs::is_regular_file(file_path)) {
+        std::cerr << "Input path is not a regular file: " << file_path << "\n";
+        return EXIT_FAILURE;
+    }
+
+    FileBuffer file_buffer;
+    try {
+        file_buffer = load_file_into_memory(file_path);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return EXIT_FAILURE;
+    }
+
+    const std::span<const char> file_view(
+        file_buffer.valid_size > 0 ? file_buffer.data.get() : nullptr,
+        file_buffer.valid_size
+    );
+
+    try {
+        corosio::io_context ctx;
+        corosio::tcp_acceptor acceptor(ctx);
+
+        acceptor.open(corosio::tcp::v4());
+
+        auto bind_ec = acceptor.bind(corosio::endpoint(static_cast<std::uint16_t>(port)));
+        if (bind_ec) {
+            std::cerr << "bind: " << bind_ec.message() << "\n";
+            return EXIT_FAILURE;
+        }
+
+        auto listen_ec = acceptor.listen(BACKLOG);
+        if (listen_ec) {
+            std::cerr << "listen: " << listen_ec.message() << "\n";
+            return EXIT_FAILURE;
+        }
+
+        capy::run_async(ctx.get_executor())(
+            accept_loop(ctx, acceptor, file_view)
+        );
+
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<std::size_t>(threads));
+
+        for (int i = 0; i < threads; ++i) {
+            pool.emplace_back(run_io_context, std::ref(ctx));
+        }
+
+        for (auto& worker : pool) {
+            worker.join();
+        }
+
+        return EXIT_SUCCESS;
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return EXIT_FAILURE;
+    }
 }
