@@ -83,10 +83,8 @@ static asio::awaitable<bool> receive_data(
         total_bytes += static_cast<std::uint64_t>(data.size());
 
         benchmark::DoNotOptimize(data.data());
-        benchmark::DoNotOptimize(data.size());
         benchmark::DoNotOptimize(total_bytes);
         benchmark::ClobberMemory();
-
     }
 
     co_return total_bytes > 0;

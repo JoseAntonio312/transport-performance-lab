@@ -144,7 +144,7 @@ static bool receive_data(
         if (n > 0) {
             total_bytes += static_cast<std::uint64_t>(n);
 
-            benchmark::DoNotOptimize(buffer);
+            benchmark::DoNotOptimize(buffer.data());
             benchmark::DoNotOptimize(total_bytes);
             benchmark::ClobberMemory();
 
