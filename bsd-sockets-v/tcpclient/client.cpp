@@ -16,7 +16,6 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -25,55 +24,10 @@
 constexpr int DEFAULT_PORT = 8080;
 constexpr std::size_t BUFFER_SIZE = 8192;
 
-static bool set_nonblocking(int fd) {
-    const int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1) {
-        return false;
-    }
-
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
-}
-
-static bool wait_for_connect(int fd) {
-    pollfd pfd{};
-    pfd.fd = fd;
-    pfd.events = POLLOUT;
-
-    while (true) {
-        const int ready = poll(&pfd, 1, -1);
-
-        if (ready > 0) {
-            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                return false;
-            }
-
-            if (pfd.revents & POLLOUT) {
-                int so_error = 0;
-                socklen_t len = sizeof(so_error);
-
-                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len) == -1) {
-                    return false;
-                }
-
-                return so_error == 0;
-            }
-        } else if (ready == -1) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return false;
-        }
-    }
-}
 
 static int connect_to_server(const std::string& server_ip, int port) {
     const int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock == -1) {
-        return -1;
-    }
-
-    if (!set_nonblocking(sock)) {
-        close(sock);
         return -1;
     }
 
@@ -87,44 +41,14 @@ static int connect_to_server(const std::string& server_ip, int port) {
     }
 
     if (connect(sock, reinterpret_cast<sockaddr*>(&server), sizeof(server)) == -1) {
-        if (errno != EINPROGRESS) {
-            close(sock);
-            return -1;
-        }
-
-        if (!wait_for_connect(sock)) {
-            close(sock);
-            return -1;
-        }
+  
+        close(sock);
+        return -1;
     }
 
     return sock;
 }
 
-static bool wait_for_readable(int fd) {
-    pollfd pfd{};
-    pfd.fd = fd;
-    pfd.events = POLLIN;
-
-    while (true) {
-        const int ready = poll(&pfd, 1, -1);
-
-        if (ready > 0) {
-            if (pfd.revents & (POLLERR | POLLNVAL)) {
-                return false;
-            }
-
-            if (pfd.revents & (POLLIN | POLLHUP)) {
-                return true;
-            }
-        } else if (ready == -1) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return false;
-        }
-    }
-}
 
 static bool receive_file(int sock, const std::string& output_path) {
     std::ofstream out(output_path, std::ios::binary);
@@ -149,18 +73,6 @@ static bool receive_file(int sock, const std::string& output_path) {
 
         if (n == 0) {
             break;
-        }
-
-        if (errno == EINTR) {
-            continue;
-        }
-
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (!wait_for_readable(sock)) {
-                std::cerr << "poll failed before transfer completion.\n";
-                return false;
-            }
-            continue;
         }
 
         std::cerr << "recv failed: " << std::strerror(errno) << "\n";

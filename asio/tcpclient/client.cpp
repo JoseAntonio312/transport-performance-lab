@@ -8,14 +8,17 @@
 #include <asio.hpp>
 #include <asio/awaitable.hpp>
 #include <asio/co_spawn.hpp>
-#include <asio/detached.hpp>
 #include <asio/redirect_error.hpp>
 #include <asio/use_awaitable.hpp>
+#include <asio/use_future.hpp>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <exception>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <string>
 #include <system_error>
@@ -41,7 +44,11 @@ static asio::awaitable<bool> connect_to_server(
         co_return false;
     }
 
-    co_await socket.async_connect(endpoint, asio::redirect_error(asio::use_awaitable, ec));
+    co_await socket.async_connect(
+        endpoint,
+        asio::redirect_error(asio::use_awaitable, ec)
+    );
+
     co_return !ec;
 }
 
@@ -56,9 +63,11 @@ static asio::awaitable<bool> receive_file(
     }
 
     std::array<char, BUFFER_SIZE> buffer{};
+    std::uint64_t total_bytes = 0;
 
     while (true) {
         std::error_code ec;
+
         const std::size_t n = co_await socket.async_read_some(
             asio::buffer(buffer),
             asio::redirect_error(asio::use_awaitable, ec)
@@ -70,6 +79,8 @@ static asio::awaitable<bool> receive_file(
                 std::cerr << "Failed to write output file.\n";
                 co_return false;
             }
+
+            total_bytes += static_cast<std::uint64_t>(n);
             continue;
         }
 
@@ -88,7 +99,8 @@ static asio::awaitable<bool> receive_file(
     }
 
     out.close();
-    co_return true;
+
+    co_return total_bytes > 0;
 }
 
 static asio::awaitable<bool> run_client(
@@ -104,18 +116,31 @@ static asio::awaitable<bool> run_client(
         co_return false;
     }
 
-    const bool ok = co_await receive_file(socket, output_path);
+    co_return co_await receive_file(socket, output_path);
+}
 
-    std::error_code ignored;
-    socket.close(ignored);
+static bool run_client_blocking(
+    const std::string& server_ip,
+    int port,
+    const std::string& output_path
+) {
+    asio::io_context io_context;
 
-    co_return ok;
+    auto result = asio::co_spawn(
+        io_context,
+        run_client(server_ip, port, output_path),
+        asio::use_future
+    );
+
+    io_context.run();
+
+    return result.get();
 }
 
 int main(int argc, char* argv[]) {
     if (argc < 2 || argc > 4) {
         std::cerr << "Usage: " << argv[0] << " <server_ip> [port] [output_file]\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     const std::string server_ip = argv[1];
@@ -126,7 +151,7 @@ int main(int argc, char* argv[]) {
         port = std::stoi(argv[2]);
         if (port <= 0 || port > 65535) {
             std::cerr << "Invalid port.\n";
-            return 1;
+            return EXIT_FAILURE;
         }
     }
 
@@ -134,17 +159,11 @@ int main(int argc, char* argv[]) {
         output_path = argv[3];
     }
 
-    bool ok = false;
-
-    asio::io_context io_context;
-    asio::co_spawn(
-        io_context,
-        [&]() -> asio::awaitable<void> {
-            ok = co_await run_client(server_ip, port, output_path);
-        },
-        asio::detached
-    );
-
-    io_context.run();
-    return ok ? 0 : 1;
+    try {
+        const bool ok = run_client_blocking(server_ip, port, output_path);
+        return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return EXIT_FAILURE;
+    }
 }

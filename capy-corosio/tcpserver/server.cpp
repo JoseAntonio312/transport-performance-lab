@@ -8,8 +8,11 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <span>
@@ -91,7 +94,6 @@ static capy::task<void> serve_client(
     std::span<const char> file_view
 ) {
     co_await send_file(sock, file_view);
-    sock.close();
     co_return;
 }
 
@@ -114,12 +116,16 @@ static capy::task<void> accept_loop(
     }
 }
 
+static void run_io_context(corosio::io_context& ctx) {
+    ctx.run();
+}
+
 int main(int argc, char* argv[]) {
     std::signal(SIGPIPE, SIG_IGN);
 
     if (argc < 2 || argc > 4) {
         std::cerr << "Usage: " << argv[0] << " <file_path> [port] [threads]\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     const fs::path file_path = argv[1];
@@ -130,7 +136,7 @@ int main(int argc, char* argv[]) {
         port = std::stoi(argv[2]);
         if (port <= 0 || port > 65535) {
             std::cerr << "Invalid port.\n";
-            return 1;
+            return EXIT_FAILURE;
         }
     }
 
@@ -138,13 +144,13 @@ int main(int argc, char* argv[]) {
         threads = std::stoi(argv[3]);
         if (threads <= 0 || threads > MAX_THREADS) {
             std::cerr << "Invalid thread count.\n";
-            return 1;
+            return EXIT_FAILURE;
         }
     }
 
     if (!fs::exists(file_path) || !fs::is_regular_file(file_path)) {
         std::cerr << "Input path is not a regular file: " << file_path << "\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     FileBuffer file_buffer;
@@ -152,7 +158,7 @@ int main(int argc, char* argv[]) {
         file_buffer = load_file_into_memory(file_path);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     const std::span<const char> file_view(
@@ -169,13 +175,13 @@ int main(int argc, char* argv[]) {
         auto bind_ec = acceptor.bind(corosio::endpoint(static_cast<std::uint16_t>(port)));
         if (bind_ec) {
             std::cerr << "bind: " << bind_ec.message() << "\n";
-            return 1;
+            return EXIT_FAILURE;
         }
 
         auto listen_ec = acceptor.listen(BACKLOG);
         if (listen_ec) {
             std::cerr << "listen: " << listen_ec.message() << "\n";
-            return 1;
+            return EXIT_FAILURE;
         }
 
         capy::run_async(ctx.get_executor())(
@@ -186,18 +192,16 @@ int main(int argc, char* argv[]) {
         pool.reserve(static_cast<std::size_t>(threads));
 
         for (int i = 0; i < threads; ++i) {
-            pool.emplace_back([&ctx]() {
-                ctx.run();
-            });
+            pool.emplace_back(run_io_context, std::ref(ctx));
         }
 
         for (auto& worker : pool) {
             worker.join();
         }
 
-        return 0;
+        return EXIT_SUCCESS;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 }

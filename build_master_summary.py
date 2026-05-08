@@ -14,6 +14,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 STAT_PREFIXES = [
     "elapsed_s",
+    "elapsed_ms",
     "energy_j_raw",
     "idle_energy_j_estimated",
     "energy_j",
@@ -71,6 +72,14 @@ def infer_library_name(path):
     return os.path.splitext(base)[0]
 
 
+def ensure_elapsed_ms_fields(row):
+    for key in STAT_KEYS:
+        ms_key = f"elapsed_ms_{key}"
+        s_key = f"elapsed_s_{key}"
+        if row.get(ms_key) is None and row.get(s_key) is not None:
+            row[ms_key] = row[s_key] * 1000.0
+
+
 def build_master_rows(summary_files):
     rows = []
 
@@ -106,6 +115,8 @@ def build_master_rows(summary_files):
 
             for prefix in STAT_PREFIXES:
                 flatten_stats(prefix, item.get(f"{prefix}_stats"), row)
+
+            ensure_elapsed_ms_fields(row)
 
             row["throughput_per_joule_mean"] = safe_div(
                 row.get("throughput_mib_s_mean"),
@@ -152,7 +163,7 @@ def build_best_by_case(rows):
     for (compiler, server_threads, parallel_bench_processes), items in sorted(grouped.items()):
         best_time = min(
             items,
-            key=lambda x: float("inf") if x.get("elapsed_s_mean") is None else x["elapsed_s_mean"]
+            key=lambda x: float("inf") if x.get("elapsed_ms_mean") is None else x["elapsed_ms_mean"]
         )
         best_energy = min(
             items,
@@ -172,7 +183,7 @@ def build_best_by_case(rows):
             "server_threads": server_threads,
             "parallel_bench_processes": parallel_bench_processes,
             "best_time_library": best_time.get("library"),
-            "best_time_elapsed_s_mean": best_time.get("elapsed_s_mean"),
+            "best_time_elapsed_ms_mean": best_time.get("elapsed_ms_mean"),
             "best_energy_library": best_energy.get("library"),
             "best_energy_j_mean": best_energy.get("energy_j_mean"),
             "best_throughput_library": best_throughput.get("library"),
@@ -196,7 +207,7 @@ def build_library_overview(rows):
         def collect(field):
             return [x[field] for x in items if x.get(field) is not None]
 
-        elapsed_values = collect("elapsed_s_mean")
+        elapsed_values = collect("elapsed_ms_mean")
         energy_values = collect("energy_j_mean")
         throughput_values = collect("throughput_mib_s_mean")
         efficiency_values = collect("throughput_per_joule_mean")
@@ -204,11 +215,11 @@ def build_library_overview(rows):
         overview.append({
             "library": library,
             "cases": len(items),
-            "average_elapsed_s_mean": sum(elapsed_values) / len(elapsed_values) if elapsed_values else None,
+            "average_elapsed_ms_mean": sum(elapsed_values) / len(elapsed_values) if elapsed_values else None,
             "average_energy_j_mean": sum(energy_values) / len(energy_values) if energy_values else None,
             "average_throughput_mib_s_mean": sum(throughput_values) / len(throughput_values) if throughput_values else None,
             "average_throughput_per_joule_mean": sum(efficiency_values) / len(efficiency_values) if efficiency_values else None,
-            "best_elapsed_s_mean": min(elapsed_values) if elapsed_values else None,
+            "best_elapsed_ms_mean": min(elapsed_values) if elapsed_values else None,
             "best_energy_j_mean": min(energy_values) if energy_values else None,
             "best_throughput_mib_s_mean": max(throughput_values) if throughput_values else None,
             "best_throughput_per_joule_mean": max(efficiency_values) if efficiency_values else None,
@@ -313,11 +324,11 @@ def build_overview_rows(library_overview):
         rows.append([
             item["library"],
             str(item["cases"]),
-            fmt(item["average_elapsed_s_mean"]),
+            fmt(item["average_elapsed_ms_mean"]),
             fmt(item["average_energy_j_mean"]),
             fmt(item["average_throughput_mib_s_mean"]),
             fmt(item["average_throughput_per_joule_mean"]),
-            fmt(item["best_elapsed_s_mean"]),
+            fmt(item["best_elapsed_ms_mean"]),
             fmt(item["best_energy_j_mean"]),
             fmt(item["best_throughput_mib_s_mean"]),
             fmt(item["best_throughput_per_joule_mean"]),
@@ -335,7 +346,7 @@ def build_best_case_rows(best_by_case):
             str(item["server_threads"]),
             str(item["parallel_bench_processes"]),
             item["best_time_library"],
-            fmt(item["best_time_elapsed_s_mean"]),
+            fmt(item["best_time_elapsed_ms_mean"]),
             item["best_energy_library"],
             fmt(item["best_energy_j_mean"]),
             item["best_throughput_library"],
@@ -528,8 +539,8 @@ def generate_global_comparison_plots(rows, plots_dir):
     generated = []
 
     metric_specs = [
-        ("elapsed_s_mean", "Mean execution time (seconds)", "Global comparison of mean execution time"),
-        ("elapsed_s_p95", "95th percentile execution time (seconds)", "Global comparison of 95th percentile execution time"),
+        ("elapsed_ms_mean", "Mean execution time (milliseconds)", "Global comparison of mean execution time"),
+        ("elapsed_ms_p95", "95th percentile execution time (milliseconds)", "Global comparison of 95th percentile execution time"),
         ("energy_j_mean", "Mean net energy consumption (joules)", "Global comparison of mean net energy consumption"),
         ("energy_j_p95", "95th percentile net energy consumption (joules)", "Global comparison of 95th percentile net energy consumption"),
         ("throughput_mib_s_mean", "Mean aggregate throughput (MiB/s)", "Global comparison of mean aggregate throughput"),
@@ -608,11 +619,11 @@ def generate_global_pdf_report(rows, best_by_case, library_overview, pdf_path, p
         overview_columns = [
             "Library",
             "Cases",
-            "Avg. time mean",
+            "Avg. time mean (ms)",
             "Avg. energy mean",
             "Avg. throughput mean",
             "Avg. throughput/J mean",
-            "Best time mean",
+            "Best time mean (ms)",
             "Best energy mean",
             "Best throughput mean",
             "Best throughput/J mean",
@@ -636,7 +647,7 @@ def generate_global_pdf_report(rows, best_by_case, library_overview, pdf_path, p
             "Server threads",
             "Parallel clients",
             "Fastest library",
-            "Fastest time mean",
+            "Fastest time mean (ms)",
             "Lowest-energy library",
             "Lowest energy mean",
             "Highest-throughput library",

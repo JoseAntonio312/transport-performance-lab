@@ -8,9 +8,7 @@
 #include <benchmark/benchmark.h>
 
 #include <arpa/inet.h>
-#include <fcntl.h>
 #include <netinet/in.h>
-#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -27,55 +25,9 @@ constexpr std::size_t BUFFER_SIZE = 8192;
 
 static int g_port = DEFAULT_PORT;
 
-static bool set_nonblocking(int fd) {
-    const int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1) {
-        return false;
-    }
-
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
-}
-
-static bool wait_for_connect(int fd) {
-    pollfd pfd{};
-    pfd.fd = fd;
-    pfd.events = POLLOUT;
-
-    while (true) {
-        const int ready = poll(&pfd, 1, -1);
-
-        if (ready > 0) {
-            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                return false;
-            }
-
-            if (pfd.revents & POLLOUT) {
-                int so_error = 0;
-                socklen_t len = sizeof(so_error);
-
-                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len) == -1) {
-                    return false;
-                }
-
-                return so_error == 0;
-            }
-        } else if (ready == -1) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return false;
-        }
-    }
-}
-
-static int connect_to_server(const char* ip, int port) {
+static int connect_to_server(const std::string& server_ip, int port) {
     const int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock == -1) {
-        return -1;
-    }
-
-    if (!set_nonblocking(sock)) {
-        close(sock);
         return -1;
     }
 
@@ -83,54 +35,22 @@ static int connect_to_server(const char* ip, int port) {
     server.sin_family = AF_INET;
     server.sin_port = htons(static_cast<std::uint16_t>(port));
 
-    if (inet_pton(AF_INET, ip, &server.sin_addr) <= 0) {
-        close(sock);
+    if (inet_pton(AF_INET, server_ip.c_str(), &server.sin_addr) <= 0) {
         return -1;
     }
 
     if (connect(sock, reinterpret_cast<sockaddr*>(&server), sizeof(server)) == -1) {
-        if (errno != EINPROGRESS) {
-            close(sock);
-            return -1;
-        }
-
-        if (!wait_for_connect(sock)) {
-            close(sock);
-            return -1;
-        }
+        return -1;
     }
 
     return sock;
 }
 
-static bool wait_for_readable(int fd) {
-    pollfd pfd{};
-    pfd.fd = fd;
-    pfd.events = POLLIN;
-
-    while (true) {
-        const int ready = poll(&pfd, 1, -1);
-
-        if (ready > 0) {
-            if (pfd.revents & (POLLERR | POLLNVAL)) {
-                return false;
-            }
-
-            if (pfd.revents & (POLLIN | POLLHUP)) {
-                return true;
-            }
-        } else if (ready == -1) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return false;
-        }
-    }
-}
-
-static bool receive_file(int sock,
-                         std::array<char, BUFFER_SIZE>& buffer,
-                         std::uint64_t& total_bytes) {
+static bool receive_file(
+    int sock,
+    std::array<char, BUFFER_SIZE>& buffer,
+    std::uint64_t& total_bytes
+) {
     total_bytes = 0;
 
     while (true) {
@@ -138,46 +58,44 @@ static bool receive_file(int sock,
 
         if (n > 0) {
             total_bytes += static_cast<std::uint64_t>(n);
+
             benchmark::DoNotOptimize(buffer.data());
             benchmark::DoNotOptimize(total_bytes);
             benchmark::ClobberMemory();
+
             continue;
         }
 
         if (n == 0) {
-            return total_bytes > 0;
+            break;
         }
 
         if (errno == EINTR) {
             continue;
         }
 
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (!wait_for_readable(sock)) {
-                return false;
-            }
-            continue;
-        }
-
         return false;
     }
+
+    return total_bytes > 0;
 }
 
-static bool run_benchmark_client(const char* ip,
-                                 int port,
-                                 std::array<char, BUFFER_SIZE>& buffer,
-                                 std::uint64_t& total_bytes) {
-    const int sock = connect_to_server(ip, port);
+static bool run_benchmark_client(
+    const std::string& server_ip,
+    int port,
+    std::array<char, BUFFER_SIZE>& buffer,
+    std::uint64_t& total_bytes
+) {
+    const int sock = connect_to_server(server_ip, port);
     if (sock == -1) {
         return false;
     }
 
-    const bool ok = receive_file(sock, buffer, total_bytes);
-    return ok;
+    return receive_file(sock, buffer, total_bytes);
 }
 
 static void BM_TCP_FileDownload(benchmark::State& state) {
-    constexpr const char* ip = "127.0.0.1";
+    const std::string server_ip = "127.0.0.1";
     const int port = g_port;
 
     std::array<char, BUFFER_SIZE> buffer{};
@@ -188,7 +106,8 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
         (void)_;
 
         std::uint64_t downloaded_bytes = 0;
-        if (!run_benchmark_client(ip, port, buffer, downloaded_bytes)) {
+
+        if (!run_benchmark_client(server_ip, port, buffer, downloaded_bytes)) {
             state.SkipWithError("Download failed.");
             break;
         }
@@ -224,11 +143,13 @@ int main(int argc, char** argv) {
     argv[filtered_argc] = nullptr;
 
     benchmark::Initialize(&filtered_argc, argv);
+
     if (benchmark::ReportUnrecognizedArguments(filtered_argc, argv)) {
         return EXIT_FAILURE;
     }
 
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
+
     return EXIT_SUCCESS;
 }

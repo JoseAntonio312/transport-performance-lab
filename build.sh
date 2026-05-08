@@ -8,6 +8,7 @@ PROJECT_DIRS=(
   "taps-asio"
   "async-berkeley"
   "bsd-sockets"
+  "bsd-sockets-v"
   "capy-corosio"
 )
 

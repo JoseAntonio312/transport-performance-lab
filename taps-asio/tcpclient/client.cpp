@@ -10,21 +10,22 @@
 #include <asio.hpp>
 #include <asio/awaitable.hpp>
 #include <asio/co_spawn.hpp>
-#include <asio/detached.hpp>
 #include <asio/use_awaitable.hpp>
+#include <asio/use_future.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <exception>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <utility>
 
-// Default remote TCP port.
 constexpr int DEFAULT_PORT = 8080;
 
-// Connect the TAPS connection to the benchmark server.
 static asio::awaitable<std::unique_ptr<taps::Connection>> connect_to_server(
     taps::TransportServices& transport_services,
     const std::string& server_ip,
@@ -50,7 +51,6 @@ static asio::awaitable<std::unique_ptr<taps::Connection>> connect_to_server(
     co_return std::move(*connection_result);
 }
 
-// Receive raw bytes until EOF/close and write them directly to disk.
 static asio::awaitable<bool> receive_file(
     taps::Connection& connection,
     const std::string& output_path
@@ -67,7 +67,6 @@ static asio::awaitable<bool> receive_file(
         auto receive_result = co_await connection.receive();
 
         if (!receive_result) {
-            // In this raw-byte protocol, peer close after data is the normal EOF.
             break;
         }
 
@@ -85,7 +84,6 @@ static asio::awaitable<bool> receive_file(
 
         if (!out) {
             std::cerr << "Failed to write output file.\n";
-            co_await connection.close();
             co_return false;
         }
 
@@ -93,9 +91,6 @@ static asio::awaitable<bool> receive_file(
     }
 
     out.close();
-
-    auto close_result = co_await connection.close();
-    (void)close_result;
 
     co_return total_bytes > 0;
 }
@@ -116,10 +111,28 @@ static asio::awaitable<bool> run_client(
     co_return co_await receive_file(*connection, output_path);
 }
 
+static bool run_client_blocking(
+    const std::string& server_ip,
+    int port,
+    const std::string& output_path
+) {
+    asio::io_context io_context;
+
+    auto result = asio::co_spawn(
+        io_context,
+        run_client(io_context, server_ip, port, output_path),
+        asio::use_future
+    );
+
+    io_context.run();
+
+    return result.get();
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2 || argc > 4) {
         std::cerr << "Usage: " << argv[0] << " <server_ip> [port] [output_file]\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     const std::string server_ip = argv[1];
@@ -130,7 +143,7 @@ int main(int argc, char* argv[]) {
         port = std::stoi(argv[2]);
         if (port <= 0 || port > 65535) {
             std::cerr << "Invalid port.\n";
-            return 1;
+            return EXIT_FAILURE;
         }
     }
 
@@ -139,21 +152,10 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        asio::io_context io_context;
-        bool ok = false;
-
-        asio::co_spawn(
-            io_context,
-            [&]() -> asio::awaitable<void> {
-                ok = co_await run_client(io_context, server_ip, port, output_path);
-            },
-            asio::detached
-        );
-
-        io_context.run();
-        return ok ? 0 : 1;
+        const bool ok = run_client_blocking(server_ip, port, output_path);
+        return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 }

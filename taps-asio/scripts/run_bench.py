@@ -95,7 +95,7 @@ CASE_DROP_CACHES = True
 CASE_COOLDOWN_SECONDS = 20
 
 # =========================
-# SERVER PROCESS 
+# SERVER PROCESS
 # =========================
 SERVER_WAIT_TIMEOUT_SECONDS = 60.0
 SERVER_STOP_TIMEOUT_SECONDS = 5.0
@@ -620,6 +620,7 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
     e2 = read_energy()
 
     elapsed_s = t2 - t1
+    elapsed_ms = elapsed_s * 1000.0
     energy_j_raw = energy_delta_j(e1, e2)
     idle_energy_j_estimated = IDLE_POWER_W * elapsed_s
     energy_j_net = max(0.0, energy_j_raw - idle_energy_j_estimated)
@@ -659,6 +660,7 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
         "total_iterations": total_iterations,
         "downloads_per_process": (total_iterations / success) if success > 0 else 0.0,
         "elapsed_s": elapsed_s,
+        "elapsed_ms": elapsed_ms,
         "idle_power_w": IDLE_POWER_W,
         "energy_j_raw": energy_j_raw,
         "idle_energy_j_estimated": idle_energy_j_estimated,
@@ -763,6 +765,7 @@ def summarize_results(results):
 
     for (compiler, server_threads, parallel_bench_processes), items in sorted(grouped.items()):
         elapsed_values = [x["elapsed_s"] for x in items]
+        elapsed_ms_values = [x.get("elapsed_ms", x["elapsed_s"] * 1000.0) for x in items]
         energy_raw_values = [x["energy_j_raw"] for x in items]
         idle_estimated_values = [x["idle_energy_j_estimated"] for x in items]
         energy_values = [x["energy_j"] for x in items]
@@ -778,6 +781,7 @@ def summarize_results(results):
             "parallel_bench_processes": parallel_bench_processes,
             "runs": len(items),
             "elapsed_s_stats": compute_stats(elapsed_values),
+            "elapsed_ms_stats": compute_stats(elapsed_ms_values),
             "energy_j_raw_stats": compute_stats(energy_raw_values),
             "idle_energy_j_estimated_stats": compute_stats(idle_estimated_values),
             "energy_j_stats": compute_stats(energy_values),
@@ -806,6 +810,7 @@ def write_csv(results):
         "total_iterations",
         "downloads_per_process",
         "elapsed_s",
+        "elapsed_ms",
         "idle_power_w",
         "energy_j_raw",
         "idle_energy_j_estimated",
@@ -953,8 +958,8 @@ def generate_plots(results, summary):
         make_per_run_scatter_with_mean(
             results,
             compiler,
-            "elapsed_s",
-            "Total execution time (seconds)",
+            "elapsed_ms",
+            "Total execution time (milliseconds)",
             f"elapsed_time_{compiler}.png"
         )
 
@@ -994,8 +999,8 @@ def generate_plots(results, summary):
         make_compiler_comparison_plot(
             summary,
             server_threads,
-            "elapsed_s_stats",
-            "Mean total execution time (seconds)",
+            "elapsed_ms_stats",
+            "Mean total execution time (milliseconds)",
             f"comparison_elapsed_threads_{server_threads}.png"
         )
 
@@ -1113,7 +1118,7 @@ def build_summary_table_rows(summary):
             str(item["server_threads"]),
             str(item["parallel_bench_processes"]),
             str(item["runs"]),
-            short_stats_cell(item["elapsed_s_stats"], TABLE_WRAP_MAIN),
+            short_stats_cell(item["elapsed_ms_stats"], TABLE_WRAP_MAIN),
             short_stats_cell(item["energy_j_stats"], TABLE_WRAP_MAIN),
             short_stats_cell(item["throughput_mib_s_stats"], TABLE_WRAP_MAIN),
             short_stats_cell(item["downloads_per_process_stats"], TABLE_WRAP_MAIN),
@@ -1149,7 +1154,7 @@ def build_raw_results_rows(results):
             str(item["server_threads"]),
             str(item["parallel_bench_processes"]),
             str(item["repetition"]),
-            fmt(item["elapsed_s"], 4),
+            fmt(item.get("elapsed_ms", item["elapsed_s"] * 1000.0), 4),
             fmt(item["energy_j_raw"], 4),
             fmt(item["energy_j"], 4),
             fmt(item["throughput_mib_s"], 4),
@@ -1176,8 +1181,8 @@ def build_comparison_table_rows(summary, server_threads):
 
         rows.append([
             str(bench_count),
-            wrap_text(stats_summary_line(gcc_row["elapsed_s_stats"], "s") if gcc_row else "-", TABLE_WRAP_COMPARISON),
-            wrap_text(stats_summary_line(clang_row["elapsed_s_stats"], "s") if clang_row else "-", TABLE_WRAP_COMPARISON),
+            wrap_text(stats_summary_line(gcc_row["elapsed_ms_stats"], "ms") if gcc_row else "-", TABLE_WRAP_COMPARISON),
+            wrap_text(stats_summary_line(clang_row["elapsed_ms_stats"], "ms") if clang_row else "-", TABLE_WRAP_COMPARISON),
             wrap_text(stats_summary_line(gcc_row["energy_j_stats"], "J") if gcc_row else "-", TABLE_WRAP_COMPARISON),
             wrap_text(stats_summary_line(clang_row["energy_j_stats"], "J") if clang_row else "-", TABLE_WRAP_COMPARISON),
             wrap_text(stats_summary_line(gcc_row["throughput_mib_s_stats"], "MiB/s") if gcc_row else "-", TABLE_WRAP_COMPARISON),
@@ -1214,7 +1219,7 @@ def generate_main_pdf_report(final_data, summary, results, output_path, include_
             "Server\nthreads",
             "Parallel\nbenchmark\nclients",
             "Runs",
-            "Execution time\nsummary",
+            "Execution time\nsummary (ms)",
             "Net energy\nsummary",
             "Throughput\nsummary",
             "Downloads per\nprocess summary",
@@ -1272,7 +1277,7 @@ def generate_main_pdf_report(final_data, summary, results, output_path, include_
             for row in compiler_rows:
                 compiler_lines.append(
                     f"Server threads = {row['server_threads']}, parallel clients = {row['parallel_bench_processes']}: "
-                    f"time -> {stats_summary_line(row['elapsed_s_stats'], 's')} | "
+                    f"time -> {stats_summary_line(row['elapsed_ms_stats'], 'ms')} | "
                     f"net energy -> {stats_summary_line(row['energy_j_stats'], 'J')} | "
                     f"throughput -> {stats_summary_line(row['throughput_mib_s_stats'], 'MiB/s')}"
                 )
@@ -1289,7 +1294,7 @@ def generate_main_pdf_report(final_data, summary, results, output_path, include_
                 "Server\nthreads",
                 "Parallel\nbenchmark\nclients",
                 "Rep.",
-                "Execution\ntime (s)",
+                "Execution\ntime (ms)",
                 "Raw\nenergy (J)",
                 "Net\nenergy (J)",
                 "Throughput\n(MiB/s)",
@@ -1333,8 +1338,8 @@ def generate_comparison_pdf_report(final_data, summary, results, output_path, in
         for server_threads in SERVER_THREADS:
             table_columns = [
                 "Parallel\nbenchmark\nclients",
-                "GCC execution\ntime summary",
-                "Clang execution\ntime summary",
+                "GCC execution\ntime summary (ms)",
+                "Clang execution\ntime summary (ms)",
                 "GCC net energy\nsummary",
                 "Clang net energy\nsummary",
                 "GCC throughput\nsummary",
@@ -1373,7 +1378,7 @@ def generate_comparison_pdf_report(final_data, summary, results, output_path, in
                     str(item["server_threads"]),
                     str(item["parallel_bench_processes"]),
                     str(item["repetition"]),
-                    fmt(item["elapsed_s"], 4),
+                    fmt(item.get("elapsed_ms", item["elapsed_s"] * 1000.0), 4),
                     fmt(item["energy_j"], 4),
                     fmt(item["throughput_mib_s"], 4),
                 ])
@@ -1383,7 +1388,7 @@ def generate_comparison_pdf_report(final_data, summary, results, output_path, in
                 "Server\nthreads",
                 "Parallel\nclients",
                 "Rep.",
-                "Execution\ntime (s)",
+                "Execution\ntime (ms)",
                 "Net\nenergy (J)",
                 "Throughput\n(MiB/s)",
             ]
@@ -1413,7 +1418,7 @@ def print_console_summary(summary):
         server_threads = item["server_threads"]
         benches = item["parallel_bench_processes"]
 
-        elapsed = item["elapsed_s_stats"]
+        elapsed = item["elapsed_ms_stats"]
         energy_raw = item["energy_j_raw_stats"]
         energy_net = item["energy_j_stats"]
         throughput = item["throughput_mib_s_stats"]
@@ -1423,7 +1428,7 @@ def print_console_summary(summary):
             f"parallel_bench_processes={benches}"
         )
         print(
-            f"  time_s: mean={elapsed['mean']:.6f} "
+            f"  time_ms: mean={elapsed['mean']:.6f} "
             f"median={elapsed['median']:.6f} "
             f"min={elapsed['min']:.6f} max={elapsed['max']:.6f}"
         )

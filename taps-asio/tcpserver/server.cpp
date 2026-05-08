@@ -21,6 +21,7 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -202,7 +203,7 @@ int main(int argc, char* argv[]) {
 
     if (argc < 2 || argc > 4) {
         std::cerr << "Usage: " << argv[0] << " <file_path> [port] [threads]\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     const fs::path file_path = argv[1];
@@ -213,7 +214,7 @@ int main(int argc, char* argv[]) {
         port = std::stoi(argv[2]);
         if (port <= 0 || port > 65535) {
             std::cerr << "Invalid port.\n";
-            return 1;
+            return EXIT_FAILURE;
         }
     }
 
@@ -221,13 +222,13 @@ int main(int argc, char* argv[]) {
         threads = std::stoi(argv[3]);
         if (threads <= 0 || threads > MAX_THREADS) {
             std::cerr << "Invalid thread count.\n";
-            return 1;
+            return EXIT_FAILURE;
         }
     }
 
     if (!fs::exists(file_path) || !fs::is_regular_file(file_path)) {
         std::cerr << "Input path is not a regular file: " << file_path << "\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     FileMapping mapping{};
@@ -236,7 +237,7 @@ int main(int argc, char* argv[]) {
         mapping = map_file_read_only(file_path);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     const std::span<const char> payload(mapping.data, mapping.size);
@@ -266,9 +267,9 @@ int main(int argc, char* argv[]) {
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         unmap_file(mapping);
-        return 1;
+        return EXIT_FAILURE;
     }
 
     unmap_file(mapping);
-    return 0;
+    return EXIT_SUCCESS;
 }

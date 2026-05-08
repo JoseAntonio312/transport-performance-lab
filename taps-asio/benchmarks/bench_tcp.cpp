@@ -14,20 +14,20 @@
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
 #include <asio/use_awaitable.hpp>
+#include <asio/use_future.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <future>
 #include <memory>
 #include <string>
 #include <utility>
 
-// Default server TCP port.
 constexpr int DEFAULT_PORT = 8080;
 
-// Runtime-configurable server port.
 static int g_port = DEFAULT_PORT;
 
-// Connect the TAPS connection to the benchmark server.
 static asio::awaitable<std::unique_ptr<taps::Connection>> connect_to_server(
     taps::TransportServices& transport_services,
     const char* ip,
@@ -52,8 +52,6 @@ static asio::awaitable<std::unique_ptr<taps::Connection>> connect_to_server(
     co_return std::move(*connection_result);
 }
 
-// Download raw bytes until the peer closes the connection.
-// The benchmark does not write to disk; it only drains the socket.
 static asio::awaitable<bool> download_file(
     asio::io_context& io_context,
     const char* ip,
@@ -72,7 +70,6 @@ static asio::awaitable<bool> download_file(
         auto receive_result = co_await connection->receive();
 
         if (!receive_result) {
-            // In this raw-byte protocol, peer close after data is the normal EOF.
             break;
         }
 
@@ -90,13 +87,23 @@ static asio::awaitable<bool> download_file(
         benchmark::ClobberMemory();
     }
 
-    auto close_result = co_await connection->close();
-    (void)close_result;
-
     co_return total_bytes > 0;
 }
 
-// Benchmark one full file download.
+static bool run_benchmark_download(const char* ip, int port) {
+    asio::io_context io_context;
+
+    auto result = asio::co_spawn(
+        io_context,
+        download_file(io_context, ip, port),
+        asio::use_future
+    );
+
+    io_context.run();
+
+    return result.get();
+}
+
 static void BM_TCP_FileDownload(benchmark::State& state) {
     constexpr const char* ip = "127.0.0.1";
     const int port = g_port;
@@ -104,18 +111,7 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
     for (auto _ : state) {
         (void)_;
 
-        asio::io_context io_context;
-        bool ok = false;
-
-        asio::co_spawn(
-            io_context,
-            [&]() -> asio::awaitable<void> {
-                ok = co_await download_file(io_context, ip, port);
-            },
-            asio::detached
-        );
-
-        io_context.run();
+        const bool ok = run_benchmark_download(ip, port);
 
         if (!ok) {
             state.SkipWithError("Download failed.");
@@ -147,11 +143,13 @@ int main(int argc, char** argv) {
     argv[filtered_argc] = nullptr;
 
     benchmark::Initialize(&filtered_argc, argv);
+
     if (benchmark::ReportUnrecognizedArguments(filtered_argc, argv)) {
-        return 1;
+        return EXIT_FAILURE;
     }
 
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
-    return 0;
+
+    return EXIT_SUCCESS;
 }

@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <system_error>
 
@@ -25,18 +26,6 @@ constexpr int DEFAULT_PORT = 8080;
 constexpr std::size_t BUFFER_SIZE = 8192;
 
 static int g_port = DEFAULT_PORT;
-
-static capy::task<bool> connect_to_server(corosio::tcp_socket& socket,
-                                          const char* ip,
-                                          int port) {
-    socket.open();
-
-    auto [ec] = co_await socket.connect(
-        corosio::endpoint(corosio::endpoint(ip), static_cast<unsigned short>(port))
-    );
-
-    co_return !ec;
-}
 
 static bool is_clean_eof(const std::error_code& ec) {
     if (!ec) {
@@ -54,30 +43,50 @@ static bool is_clean_eof(const std::error_code& ec) {
            message == "eof";
 }
 
-static capy::task<bool> receive_file(corosio::tcp_socket& socket,
-                                     std::array<char, BUFFER_SIZE>& buffer,
-                                     std::uint64_t& total_bytes) {
+static capy::task<bool> run_benchmark_client(
+    corosio::io_context& context,
+    const char* ip,
+    int port,
+    std::array<char, BUFFER_SIZE>& buffer,
+    std::uint64_t& total_bytes
+) {
     total_bytes = 0;
 
+    corosio::tcp_socket socket(context);
+    socket.open();
+
+    auto [connect_ec] = co_await socket.connect(
+        corosio::endpoint(
+            corosio::endpoint(ip),
+            static_cast<unsigned short>(port)
+        )
+    );
+
+    if (connect_ec) {
+        co_return false;
+    }
+
     while (true) {
-        auto [ec, n] = co_await socket.read_some(
+        auto [read_ec, n] = co_await socket.read_some(
             capy::mutable_buffer(buffer.data(), buffer.size())
         );
 
         if (n > 0) {
             total_bytes += static_cast<std::uint64_t>(n);
+
             benchmark::DoNotOptimize(buffer.data());
             benchmark::DoNotOptimize(total_bytes);
             benchmark::ClobberMemory();
+
             continue;
         }
 
-        if (!ec && n == 0) {
+        if (!read_ec && n == 0) {
             break;
         }
 
-        if (ec) {
-            if (total_bytes > 0 && is_clean_eof(ec)) {
+        if (read_ec) {
+            if (total_bytes > 0 && is_clean_eof(read_ec)) {
                 break;
             }
 
@@ -86,23 +95,6 @@ static capy::task<bool> receive_file(corosio::tcp_socket& socket,
     }
 
     co_return total_bytes > 0;
-}
-
-static capy::task<bool> run_benchmark_client(corosio::io_context& context,
-                                             const char* ip,
-                                             int port,
-                                             std::array<char, BUFFER_SIZE>& buffer,
-                                             std::uint64_t& total_bytes) {
-    corosio::tcp_socket socket(context);
-
-    if (!(co_await connect_to_server(socket, ip, port))) {
-        co_return false;
-    }
-
-    const bool ok = co_await receive_file(socket, buffer, total_bytes);
-    socket.close();
-
-    co_return ok;
 }
 
 static void BM_TCP_FileDownload(benchmark::State& state) {
@@ -118,15 +110,22 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
         corosio::io_context context;
         std::array<char, BUFFER_SIZE> buffer{};
         std::uint64_t downloaded_bytes = 0;
-        bool ok = false;
+
+        auto task = run_benchmark_client(
+            context,
+            ip,
+            port,
+            buffer,
+            downloaded_bytes
+        );
 
         capy::run_async(context.get_executor())(
-            [&]() -> capy::task<void> {
-                ok = co_await run_benchmark_client(context, ip, port, buffer, downloaded_bytes);
-            }()
+            std::move(task)
         );
 
         context.run();
+
+        const bool ok = downloaded_bytes > 0;
 
         if (!ok) {
             state.SkipWithError("Download failed.");
@@ -164,11 +163,13 @@ int main(int argc, char** argv) {
     argv[filtered_argc] = nullptr;
 
     benchmark::Initialize(&filtered_argc, argv);
+
     if (benchmark::ReportUnrecognizedArguments(filtered_argc, argv)) {
-        return 1;
+        return EXIT_FAILURE;
     }
 
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
-    return 0;
+
+    return EXIT_SUCCESS;
 }

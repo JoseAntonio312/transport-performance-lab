@@ -16,8 +16,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <span>
 #include <string>
@@ -102,10 +104,6 @@ static asio::awaitable<void> serve_client(tcp::socket socket, std::span<const ch
     } catch (...) {
     }
 
-    std::error_code close_ec;
-    socket.shutdown(tcp::socket::shutdown_both, close_ec);
-    socket.close(close_ec);
-
     co_return;
 }
 
@@ -127,12 +125,16 @@ static asio::awaitable<void> accept_loop(tcp::acceptor& acceptor, std::span<cons
     }
 }
 
+static void run_io_context(asio::io_context& io_context) {
+    io_context.run();
+}
+
 int main(int argc, char* argv[]) {
     std::signal(SIGPIPE, SIG_IGN);
 
     if (argc < 2 || argc > 4) {
         std::cerr << "Usage: " << argv[0] << " <file_path> [port] [threads]\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     const fs::path file_path = argv[1];
@@ -143,7 +145,7 @@ int main(int argc, char* argv[]) {
         port = std::stoi(argv[2]);
         if (port <= 0 || port > 65535) {
             std::cerr << "Invalid port.\n";
-            return 1;
+            return EXIT_FAILURE;
         }
     }
 
@@ -151,13 +153,13 @@ int main(int argc, char* argv[]) {
         threads = std::stoi(argv[3]);
         if (threads <= 0 || threads > MAX_THREADS) {
             std::cerr << "Invalid thread count.\n";
-            return 1;
+            return EXIT_FAILURE;
         }
     }
 
     if (!fs::exists(file_path) || !fs::is_regular_file(file_path)) {
         std::cerr << "Input path is not a regular file: " << file_path << "\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     FileMapping mapping{};
@@ -165,7 +167,7 @@ int main(int argc, char* argv[]) {
         mapping = map_file_read_only(file_path);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     const std::span<const char> payload(mapping.data, mapping.size);
@@ -181,28 +183,28 @@ int main(int argc, char* argv[]) {
         if (ec) {
             std::cerr << "open: " << ec.message() << "\n";
             unmap_file(mapping);
-            return 1;
+            return EXIT_FAILURE;
         }
 
         acceptor.set_option(asio::socket_base::reuse_address(true), ec);
         if (ec) {
             std::cerr << "set_option: " << ec.message() << "\n";
             unmap_file(mapping);
-            return 1;
+            return EXIT_FAILURE;
         }
 
         acceptor.bind(tcp::endpoint(tcp::v4(), static_cast<unsigned short>(port)), ec);
         if (ec) {
             std::cerr << "bind: " << ec.message() << "\n";
             unmap_file(mapping);
-            return 1;
+            return EXIT_FAILURE;
         }
 
         acceptor.listen(BACKLOG, ec);
         if (ec) {
             std::cerr << "listen: " << ec.message() << "\n";
             unmap_file(mapping);
-            return 1;
+            return EXIT_FAILURE;
         }
 
         asio::co_spawn(
@@ -215,9 +217,7 @@ int main(int argc, char* argv[]) {
         pool.reserve(static_cast<std::size_t>(threads));
 
         for (int i = 0; i < threads; ++i) {
-            pool.emplace_back([&io_context]() {
-                io_context.run();
-            });
+            pool.emplace_back(run_io_context, std::ref(io_context));
         }
 
         for (auto& worker : pool) {
@@ -226,9 +226,9 @@ int main(int argc, char* argv[]) {
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         unmap_file(mapping);
-        return 1;
+        return EXIT_FAILURE;
     }
 
     unmap_file(mapping);
-    return 0;
+    return EXIT_SUCCESS;
 }

@@ -10,13 +10,15 @@
 #include <asio.hpp>
 #include <asio/awaitable.hpp>
 #include <asio/co_spawn.hpp>
-#include <asio/detached.hpp>
 #include <asio/redirect_error.hpp>
 #include <asio/use_awaitable.hpp>
+#include <asio/use_future.hpp>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <future>
 #include <string>
 #include <system_error>
 
@@ -27,9 +29,11 @@ constexpr std::size_t BUFFER_SIZE = 8192;
 
 static int g_port = DEFAULT_PORT;
 
-static asio::awaitable<bool> connect_to_server(tcp::socket& socket,
-                                               const char* ip,
-                                               int port) {
+static asio::awaitable<bool> connect_to_server(
+    tcp::socket& socket,
+    const char* ip,
+    int port
+) {
     std::error_code ec;
 
     tcp::endpoint endpoint(
@@ -41,17 +45,24 @@ static asio::awaitable<bool> connect_to_server(tcp::socket& socket,
         co_return false;
     }
 
-    co_await socket.async_connect(endpoint, asio::redirect_error(asio::use_awaitable, ec));
+    co_await socket.async_connect(
+        endpoint,
+        asio::redirect_error(asio::use_awaitable, ec)
+    );
+
     co_return !ec;
 }
 
-static asio::awaitable<bool> receive_file(tcp::socket& socket,
-                                          std::array<char, BUFFER_SIZE>& buffer,
-                                          std::uint64_t& total_bytes) {
+static asio::awaitable<bool> receive_file(
+    tcp::socket& socket,
+    std::array<char, BUFFER_SIZE>& buffer,
+    std::uint64_t& total_bytes
+) {
     total_bytes = 0;
 
     while (true) {
         std::error_code ec;
+
         const std::size_t n = co_await socket.async_read_some(
             asio::buffer(buffer),
             asio::redirect_error(asio::use_awaitable, ec)
@@ -59,9 +70,11 @@ static asio::awaitable<bool> receive_file(tcp::socket& socket,
 
         if (n > 0) {
             total_bytes += static_cast<std::uint64_t>(n);
+
             benchmark::DoNotOptimize(buffer.data());
             benchmark::DoNotOptimize(total_bytes);
             benchmark::ClobberMemory();
+
             continue;
         }
 
@@ -81,10 +94,12 @@ static asio::awaitable<bool> receive_file(tcp::socket& socket,
     co_return total_bytes > 0;
 }
 
-static asio::awaitable<bool> run_benchmark_client(const char* ip,
-                                                  int port,
-                                                  std::array<char, BUFFER_SIZE>& buffer,
-                                                  std::uint64_t& total_bytes) {
+static asio::awaitable<bool> run_benchmark_client(
+    const char* ip,
+    int port,
+    std::array<char, BUFFER_SIZE>& buffer,
+    std::uint64_t& total_bytes
+) {
     auto executor = co_await asio::this_coro::executor;
     tcp::socket socket(executor);
 
@@ -92,12 +107,26 @@ static asio::awaitable<bool> run_benchmark_client(const char* ip,
         co_return false;
     }
 
-    const bool ok = co_await receive_file(socket, buffer, total_bytes);
+    co_return co_await receive_file(socket, buffer, total_bytes);
+}
 
-    std::error_code ignored;
-    socket.close(ignored);
+static bool run_benchmark_client_blocking(
+    const char* ip,
+    int port,
+    std::array<char, BUFFER_SIZE>& buffer,
+    std::uint64_t& total_bytes
+) {
+    asio::io_context io_context;
 
-    co_return ok;
+    auto result = asio::co_spawn(
+        io_context,
+        run_benchmark_client(ip, port, buffer, total_bytes),
+        asio::use_future
+    );
+
+    io_context.run();
+
+    return result.get();
 }
 
 static void BM_TCP_FileDownload(benchmark::State& state) {
@@ -110,20 +139,15 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
     for (auto _ : state) {
         (void)_;
 
-        asio::io_context io_context;
         std::array<char, BUFFER_SIZE> buffer{};
         std::uint64_t downloaded_bytes = 0;
-        bool ok = false;
 
-        asio::co_spawn(
-            io_context,
-            [&]() -> asio::awaitable<void> {
-                ok = co_await run_benchmark_client(ip, port, buffer, downloaded_bytes);
-            },
-            asio::detached
+        const bool ok = run_benchmark_client_blocking(
+            ip,
+            port,
+            buffer,
+            downloaded_bytes
         );
-
-        io_context.run();
 
         if (!ok) {
             state.SkipWithError("Download failed.");
@@ -161,11 +185,13 @@ int main(int argc, char** argv) {
     argv[filtered_argc] = nullptr;
 
     benchmark::Initialize(&filtered_argc, argv);
+
     if (benchmark::ReportUnrecognizedArguments(filtered_argc, argv)) {
-        return 1;
+        return EXIT_FAILURE;
     }
 
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
-    return 0;
+
+    return EXIT_SUCCESS;
 }
