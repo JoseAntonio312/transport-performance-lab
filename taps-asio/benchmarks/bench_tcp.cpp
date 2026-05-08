@@ -52,7 +52,7 @@ static asio::awaitable<std::unique_ptr<taps::Connection>> connect_to_server(
     co_return std::move(*connection_result);
 }
 
-static asio::awaitable<bool> download_file(
+static asio::awaitable<bool> receive_data(
     asio::io_context& io_context,
     const char* ip,
     int port
@@ -74,7 +74,7 @@ static asio::awaitable<bool> download_file(
         }
 
         auto message = std::move(*receive_result);
-        auto data = message.data();
+        const auto& data = message.data();
 
         if (data.empty()) {
             break;
@@ -82,7 +82,7 @@ static asio::awaitable<bool> download_file(
 
         total_bytes += static_cast<std::uint64_t>(data.size());
 
-        benchmark::DoNotOptimize(data.data());
+        benchmark::DoNotOptimize(data);
         benchmark::DoNotOptimize(total_bytes);
         benchmark::ClobberMemory();
     }
@@ -95,7 +95,7 @@ static bool run_benchmark_download(const char* ip, int port) {
 
     auto result = asio::co_spawn(
         io_context,
-        download_file(io_context, ip, port),
+        receive_data(io_context, ip, port),
         asio::use_future
     );
 

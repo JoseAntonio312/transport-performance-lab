@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <span>
 #include <string>
 
 constexpr int DEFAULT_PORT = 8080;
@@ -63,6 +64,7 @@ static bool wait_for_connect(int fd) {
             if (errno == EINTR) {
                 continue;
             }
+
             return false;
         }
     }
@@ -123,14 +125,17 @@ static bool wait_for_readable(int fd) {
             if (errno == EINTR) {
                 continue;
             }
+
             return false;
         }
     }
 }
 
-static bool receive_file(int sock,
-                         std::array<char, BUFFER_SIZE>& buffer,
-                         std::uint64_t& total_bytes) {
+static bool receive_data(
+    int sock,
+    std::span<char> buffer,
+    std::uint64_t& total_bytes
+) {
     total_bytes = 0;
 
     while (true) {
@@ -138,9 +143,11 @@ static bool receive_file(int sock,
 
         if (n > 0) {
             total_bytes += static_cast<std::uint64_t>(n);
-            benchmark::DoNotOptimize(buffer.data());
+
+            benchmark::DoNotOptimize(buffer);
             benchmark::DoNotOptimize(total_bytes);
             benchmark::ClobberMemory();
+
             continue;
         }
 
@@ -156,6 +163,7 @@ static bool receive_file(int sock,
             if (!wait_for_readable(sock)) {
                 return false;
             }
+
             continue;
         }
 
@@ -163,17 +171,18 @@ static bool receive_file(int sock,
     }
 }
 
-static bool run_benchmark_client(const char* ip,
-                                 int port,
-                                 std::array<char, BUFFER_SIZE>& buffer,
-                                 std::uint64_t& total_bytes) {
+static bool run_benchmark_client(
+    const char* ip,
+    int port,
+    std::span<char> buffer,
+    std::uint64_t& total_bytes
+) {
     const int sock = connect_to_server(ip, port);
     if (sock == -1) {
         return false;
     }
 
-    const bool ok = receive_file(sock, buffer, total_bytes);
-    return ok;
+    return receive_data(sock, buffer, total_bytes);
 }
 
 static void BM_TCP_FileDownload(benchmark::State& state) {
@@ -188,7 +197,13 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
         (void)_;
 
         std::uint64_t downloaded_bytes = 0;
-        if (!run_benchmark_client(ip, port, buffer, downloaded_bytes)) {
+
+        if (!run_benchmark_client(
+                ip,
+                port,
+                std::span<char>(buffer.data(), buffer.size()),
+                downloaded_bytes
+            )) {
             state.SkipWithError("Download failed.");
             break;
         }
@@ -224,11 +239,13 @@ int main(int argc, char** argv) {
     argv[filtered_argc] = nullptr;
 
     benchmark::Initialize(&filtered_argc, argv);
+
     if (benchmark::ReportUnrecognizedArguments(filtered_argc, argv)) {
         return EXIT_FAILURE;
     }
 
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
+
     return EXIT_SUCCESS;
 }

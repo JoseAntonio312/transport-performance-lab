@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <future>
+#include <span>
 #include <string>
 #include <system_error>
 
@@ -53,9 +54,9 @@ static asio::awaitable<bool> connect_to_server(
     co_return !ec;
 }
 
-static asio::awaitable<bool> receive_file(
+static asio::awaitable<bool> receive_data(
     tcp::socket& socket,
-    std::array<char, BUFFER_SIZE>& buffer,
+    std::span<char> buffer,
     std::uint64_t& total_bytes
 ) {
     total_bytes = 0;
@@ -71,7 +72,7 @@ static asio::awaitable<bool> receive_file(
         if (n > 0) {
             total_bytes += static_cast<std::uint64_t>(n);
 
-            benchmark::DoNotOptimize(buffer.data());
+            benchmark::DoNotOptimize(buffer);
             benchmark::DoNotOptimize(total_bytes);
             benchmark::ClobberMemory();
 
@@ -97,7 +98,7 @@ static asio::awaitable<bool> receive_file(
 static asio::awaitable<bool> run_benchmark_client(
     const char* ip,
     int port,
-    std::array<char, BUFFER_SIZE>& buffer,
+    std::span<char> buffer,
     std::uint64_t& total_bytes
 ) {
     auto executor = co_await asio::this_coro::executor;
@@ -107,13 +108,13 @@ static asio::awaitable<bool> run_benchmark_client(
         co_return false;
     }
 
-    co_return co_await receive_file(socket, buffer, total_bytes);
+    co_return co_await receive_data(socket, buffer, total_bytes);
 }
 
 static bool run_benchmark_client_blocking(
     const char* ip,
     int port,
-    std::array<char, BUFFER_SIZE>& buffer,
+    std::span<char> buffer,
     std::uint64_t& total_bytes
 ) {
     asio::io_context io_context;
@@ -145,7 +146,7 @@ static void BM_TCP_FileDownload(benchmark::State& state) {
         const bool ok = run_benchmark_client_blocking(
             ip,
             port,
-            buffer,
+            std::span<char>(buffer.data(), buffer.size()),
             downloaded_bytes
         );
 
