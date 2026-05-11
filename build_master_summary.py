@@ -27,6 +27,48 @@ STAT_PREFIXES = [
 
 STAT_KEYS = ["count", "mean", "median", "stdev", "p25", "p50", "p95", "min", "max"]
 
+LIBRARY_DISPLAY_NAMES = {
+    "bsd-sockets": "BSD-sockets",
+    "asio": "ASIO",
+    "capy-corosio": "Capy-Corosio",
+    "async-berkeley": "Senders/Receivers",
+    "taps-asio": "TAPS",
+}
+
+LIBRARY_ORDER = [
+    "bsd-sockets",
+    "asio",
+    "capy-corosio",
+    "async-berkeley",
+    "taps-asio",
+]
+
+LIBRARY_DISPLAY_ORDER = [
+    LIBRARY_DISPLAY_NAMES[name] for name in LIBRARY_ORDER
+]
+
+
+def library_display_name(library_id):
+    return LIBRARY_DISPLAY_NAMES.get(library_id, library_id)
+
+
+def library_sort_key(library_id):
+    if library_id in LIBRARY_ORDER:
+        return (LIBRARY_ORDER.index(library_id), library_id)
+    return (len(LIBRARY_ORDER), library_id or "")
+
+
+def library_display_sort_key(library_name):
+    if library_name in LIBRARY_DISPLAY_ORDER:
+        return (LIBRARY_DISPLAY_ORDER.index(library_name), library_name)
+    return (len(LIBRARY_DISPLAY_ORDER), library_name or "")
+
+
+def ensure_parent_dir(path):
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
 
 def flatten_stats(prefix, stats, row):
     if not stats:
@@ -60,7 +102,7 @@ def collect_summary_files(input_dir):
             if name.endswith("_summary.json"):
                 summary_files.append(os.path.join(root, name))
 
-    return sorted(summary_files)
+    return sorted(summary_files, key=lambda path: library_sort_key(infer_library_name(path)))
 
 
 def infer_library_name(path):
@@ -84,7 +126,8 @@ def build_master_rows(summary_files):
     rows = []
 
     for path in summary_files:
-        library = infer_library_name(path)
+        library_id = infer_library_name(path)
+        library_name = library_display_name(library_id)
 
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -101,7 +144,8 @@ def build_master_rows(summary_files):
             parallel_bench_processes = item.get("parallel_bench_processes")
 
             row = {
-                "library": library,
+                "library": library_name,
+                "library_id": library_id,
                 "compiler": compiler,
                 "server_threads": server_threads,
                 "parallel_bench_processes": parallel_bench_processes,
@@ -137,7 +181,7 @@ def build_master_rows(summary_files):
 
     rows.sort(
         key=lambda x: (
-            x["library"] or "",
+            library_sort_key(x.get("library_id")),
             x["compiler"] or "",
             x["server_threads"] if x["server_threads"] is not None else -1,
             x["parallel_bench_processes"] if x["parallel_bench_processes"] is not None else -1,
@@ -183,12 +227,16 @@ def build_best_by_case(rows):
             "server_threads": server_threads,
             "parallel_bench_processes": parallel_bench_processes,
             "best_time_library": best_time.get("library"),
+            "best_time_library_id": best_time.get("library_id"),
             "best_time_elapsed_ms_mean": best_time.get("elapsed_ms_mean"),
             "best_energy_library": best_energy.get("library"),
+            "best_energy_library_id": best_energy.get("library_id"),
             "best_energy_j_mean": best_energy.get("energy_j_mean"),
             "best_throughput_library": best_throughput.get("library"),
+            "best_throughput_library_id": best_throughput.get("library_id"),
             "best_throughput_mib_s_mean": best_throughput.get("throughput_mib_s_mean"),
             "best_efficiency_library": best_efficiency.get("library"),
+            "best_efficiency_library_id": best_efficiency.get("library_id"),
             "best_throughput_per_joule_mean": best_efficiency.get("throughput_per_joule_mean"),
         })
 
@@ -199,11 +247,11 @@ def build_library_overview(rows):
     grouped = defaultdict(list)
 
     for row in rows:
-        grouped[row["library"]].append(row)
+        grouped[row["library_id"]].append(row)
 
     overview = []
 
-    for library, items in sorted(grouped.items()):
+    for library_id, items in sorted(grouped.items(), key=lambda kv: library_sort_key(kv[0])):
         def collect(field):
             return [x[field] for x in items if x.get(field) is not None]
 
@@ -213,7 +261,8 @@ def build_library_overview(rows):
         efficiency_values = collect("throughput_per_joule_mean")
 
         overview.append({
-            "library": library,
+            "library": library_display_name(library_id),
+            "library_id": library_id,
             "cases": len(items),
             "average_elapsed_ms_mean": sum(elapsed_values) / len(elapsed_values) if elapsed_values else None,
             "average_energy_j_mean": sum(energy_values) / len(energy_values) if energy_values else None,
@@ -229,6 +278,8 @@ def build_library_overview(rows):
 
 
 def write_json(rows, best_by_case, library_overview, output_path):
+    ensure_parent_dir(output_path)
+
     payload = {
         "rows": rows,
         "best_by_case": best_by_case,
@@ -240,6 +291,8 @@ def write_json(rows, best_by_case, library_overview, output_path):
 
 
 def write_csv(rows, output_path):
+    ensure_parent_dir(output_path)
+
     if not rows:
         with open(output_path, "w", newline="", encoding="utf-8") as f:
             pass
@@ -359,8 +412,12 @@ def build_best_case_rows(best_by_case):
 
 
 def unique_values(rows, key):
-    values = sorted({row.get(key) for row in rows if row.get(key) is not None})
-    return values
+    values = {row.get(key) for row in rows if row.get(key) is not None}
+
+    if key == "library":
+        return sorted(values, key=library_display_sort_key)
+
+    return sorted(values)
 
 
 def sanitize_filename(text):
