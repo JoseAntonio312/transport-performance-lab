@@ -5,35 +5,46 @@
  * Minimal raw-byte server for performance and energy measurements.
  */
 
-#include <csignal>
+#include <io/io.hpp>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
-#include <netinet/in.h>
-#include <poll.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <io/io.hpp>
-
-#include <array>
-#include <cerrno>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+using namespace io;
+using namespace io::socket;
+using namespace io::execution;
+using namespace stdexec;
+using namespace exec;
+
+using triggers = basic_triggers<poll_multiplexer>;
+using dialog = socket_dialog<poll_multiplexer>;
+using message = socket_message<sockaddr_in>;
 
 namespace fs = std::filesystem;
-using SocketHandle = io::socket::socket_handle;
 
 constexpr int DEFAULT_PORT = 8080;
 constexpr int BACKLOG = 128;
 constexpr int MAX_THREADS = 256;
-constexpr std::size_t MAX_ACTIVE_CLIENTS = 4096;
 
 struct FileMapping {
     int fd = -1;
@@ -41,18 +52,16 @@ struct FileMapping {
     std::size_t size = 0;
 };
 
-static bool set_nonblocking(SocketHandle& fd) {
-    const int flags = io::fcntl(fd, F_GETFL, 0);
-    if (flags == -1) {
-        return false;
+struct WriteState {
+    dialog client;
+    std::span<const char> payload;
+    std::size_t sent = 0;
+
+    WriteState(dialog&& accepted_client, std::span<const char> file_payload)
+        : client(std::move(accepted_client)),
+          payload(file_payload) {
     }
-
-    return io::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
-}
-
-static int native_fd(const SocketHandle& fd) {
-    return static_cast<int>(fd);
-}
+};
 
 static FileMapping map_file_read_only(const fs::path& path) {
     FileMapping mapping{};
@@ -72,8 +81,8 @@ static FileMapping map_file_read_only(const fs::path& path) {
 
     void* ptr = mmap(nullptr, mapping.size, PROT_READ, MAP_PRIVATE, mapping.fd, 0);
     if (ptr == MAP_FAILED) {
-        close(mapping.fd);
-        throw std::runtime_error("mmap() failed.");
+        ::close(mapping.fd);
+        throw std::runtime_error("mmap failed.");
     }
 
     mapping.data = static_cast<const char*>(ptr);
@@ -86,138 +95,89 @@ static void unmap_file(FileMapping& mapping) {
     }
 
     if (mapping.fd != -1) {
-        close(mapping.fd);
+        ::close(mapping.fd);
     }
 
-    mapping.fd = -1;
     mapping.data = nullptr;
+    mapping.fd = -1;
     mapping.size = 0;
 }
 
-// Try exactly one non-blocking sendmsg() step for one client.
-// Return values:
-//   1 -> full transfer completed
-//   0 -> partial progress or would block; continue later
-//  -1 -> fatal error
-static int send_file_step(SocketHandle& fd, std::size_t& sent, std::span<const char> payload) {
-    if (sent >= payload.size()) {
-        return 1;
+static constexpr auto error_handler = [](const auto& error) {
+    if constexpr (std::is_same_v<std::decay_t<decltype(error)>, int>) {
+        std::cerr << std::error_code(error, std::system_category()).message() << "\n";
+    } else {
+        std::cerr << "async operation failed\n";
+    }
+};
+
+static void send_file(
+    async_scope& scope,
+    std::shared_ptr<WriteState> state
+) {
+    if (state->sent >= state->payload.size()) {
+        return;
     }
 
-    io::socket::socket_message<> msg;
-    msg.buffers.emplace_back(
-        const_cast<char*>(payload.data() + sent),
-        payload.size() - sent
+    const std::size_t remaining = state->payload.size() - state->sent;
+
+    auto msg = std::make_shared<message>();
+    msg->buffers.emplace_back(
+        const_cast<char*>(state->payload.data() + state->sent),
+        remaining
     );
 
-    const ssize_t n = io::sendmsg(fd, msg, 0);
-
-    if (n > 0) {
-        sent += static_cast<std::size_t>(n);
-        return sent == payload.size() ? 1 : 0;
-    }
-
-    if (n == -1 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
-        return 0;
-    }
-
-    return -1;
-}
-
-static int serve_client_step(SocketHandle& fd, std::size_t& sent, std::span<const char> payload) {
-    return send_file_step(fd, sent, payload);
-}
-
-static void accept_new_clients(
-    SocketHandle& server_fd,
-    std::array<SocketHandle, MAX_ACTIVE_CLIENTS>& client_fds,
-    std::array<std::size_t, MAX_ACTIVE_CLIENTS>& client_sent,
-    std::size_t& client_count
-) {
-    while (client_count < MAX_ACTIVE_CLIENTS) {
-        auto [client_fd, client_addr] = io::accept(server_fd);
-        (void)client_addr;
-
-        if (native_fd(client_fd) < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    auto operation =
+        sendmsg(state->client, *msg, 0)
+        | then([&scope, state, msg](ssize_t bytes_sent) {
+            if (bytes_sent <= 0) {
                 return;
             }
 
-            return;
-        }
+            state->sent += static_cast<std::size_t>(bytes_sent);
+            send_file(scope, state);
+        })
+        | upon_error([state, msg](const auto& error) {
+            error_handler(error);
+        });
 
-        if (!set_nonblocking(client_fd)) {
-            continue;
-        }
-
-        client_fds[client_count] = std::move(client_fd);
-        client_sent[client_count] = 0;
-        ++client_count;
-    }
+    scope.spawn(std::move(operation));
 }
 
-static void accept_loop(SocketHandle& server_fd, std::span<const char> payload) {
-    std::array<SocketHandle, MAX_ACTIVE_CLIENTS> client_fds{};
-    std::array<std::size_t, MAX_ACTIVE_CLIENTS> client_sent{};
-    std::array<pollfd, MAX_ACTIVE_CLIENTS + 1> pollfds{};
+static void serve_client(
+    async_scope& scope,
+    dialog&& client,
+    std::span<const char> payload
+) {
+    auto state = std::make_shared<WriteState>(
+        std::move(client),
+        payload
+    );
 
-    std::size_t client_count = 0;
+    send_file(scope, state);
+}
 
-    while (true) {
-        pollfds[0].fd = native_fd(server_fd);
-        pollfds[0].events = POLLIN;
-        pollfds[0].revents = 0;
+static void accept_loop(
+    async_scope& scope,
+    const dialog& server,
+    std::span<const char> payload
+) {
+    auto operation =
+        accept(server)
+        | then([&scope, &server, payload](auto result) {
+            auto [client, addr] = std::move(result);
+            (void)addr;
 
-        for (std::size_t i = 0; i < client_count; ++i) {
-            pollfds[i + 1].fd = native_fd(client_fds[i]);
-            pollfds[i + 1].events = POLLOUT;
-            pollfds[i + 1].revents = 0;
-        }
+            serve_client(scope, std::move(client), payload);
+            accept_loop(scope, server, payload);
+        })
+        | upon_error(error_handler);
 
-        const int ready = poll(pollfds.data(), static_cast<nfds_t>(client_count + 1), -1);
+    scope.spawn(std::move(operation));
+}
 
-        if (ready == -1) {
-            if (errno == EINTR) {
-                continue;
-            }
-            break;
-        }
-
-        if (pollfds[0].revents & POLLIN) {
-            accept_new_clients(server_fd, client_fds, client_sent, client_count);
-        }
-
-        std::size_t i = 0;
-        while (i < client_count) {
-            const short revents = pollfds[i + 1].revents;
-            bool remove_client = false;
-
-            if (revents & POLLOUT) {
-                const int status = serve_client_step(client_fds[i], client_sent[i], payload);
-
-                if (status == 1 || status == -1) {
-                    client_fds[i] = {};
-                    remove_client = true;
-                }
-            } else if (revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                client_fds[i] = {};
-                remove_client = true;
-            }
-
-            if (remove_client) {
-                if (i + 1 < client_count) {
-                    client_fds[i] = std::move(client_fds[client_count - 1]);
-                    client_sent[i] = client_sent[client_count - 1];
-                }
-                --client_count;
-            } else {
-                ++i;
-            }
-        }
+static void run_triggers(triggers& trigs) {
+    while (trigs.wait()) {
     }
 }
 
@@ -226,7 +186,7 @@ int main(int argc, char* argv[]) {
 
     if (argc < 2 || argc > 4) {
         std::cerr << "Usage: " << argv[0] << " <file_path> [port] [threads]\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     const fs::path file_path = argv[1];
@@ -237,7 +197,7 @@ int main(int argc, char* argv[]) {
         port = std::stoi(argv[2]);
         if (port <= 0 || port > 65535) {
             std::cerr << "Invalid port.\n";
-            return 1;
+            return EXIT_FAILURE;
         }
     }
 
@@ -245,79 +205,77 @@ int main(int argc, char* argv[]) {
         threads = std::stoi(argv[3]);
         if (threads <= 0 || threads > MAX_THREADS) {
             std::cerr << "Invalid thread count.\n";
-            return 1;
+            return EXIT_FAILURE;
         }
     }
 
     if (!fs::exists(file_path) || !fs::is_regular_file(file_path)) {
         std::cerr << "Input path is not a regular file: " << file_path << "\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     FileMapping mapping{};
+
     try {
         mapping = map_file_read_only(file_path);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     const std::span<const char> payload(mapping.data, mapping.size);
 
-    SocketHandle server_fd(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (native_fd(server_fd) < 0) {
-        std::cerr << "socket() failed.\n";
+    try {
+        async_scope scope;
+        triggers trigs;
+
+        auto server = trigs.emplace(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+        auto server_address = make_address<sockaddr_in>();
+        server_address->sin_family = AF_INET;
+        server_address->sin_addr.s_addr = htonl(INADDR_ANY);
+        server_address->sin_port = htons(static_cast<std::uint16_t>(port));
+
+        socket_option<int> reuse{1};
+        if (setsockopt(server, SOL_SOCKET, SO_REUSEADDR, reuse)) {
+            throw std::system_error(
+                {errno, std::system_category()},
+                "setsockopt failed"
+            );
+        }
+
+        if (::io::bind(server, server_address)) {
+            throw std::system_error(
+                {errno, std::system_category()},
+                "bind failed"
+            );
+        }
+
+        if (::io::listen(server, BACKLOG)) {
+            throw std::system_error(
+                {errno, std::system_category()},
+                "listen failed"
+            );
+        }
+
+        accept_loop(scope, server, payload);
+
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<std::size_t>(threads));
+
+        for (int i = 0; i < threads; ++i) {
+            pool.emplace_back(run_triggers, std::ref(trigs));
+        }
+
+        for (auto& worker : pool) {
+            worker.join();
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
         unmap_file(mapping);
-        return 1;
-    }
-
-    int opt = 1;
-    const auto opt_bytes = std::as_bytes(std::span{&opt, 1});
-    if (io::setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, opt_bytes) == -1) {
-        std::cerr << "setsockopt() failed.\n";
-        unmap_file(mapping);
-        return 1;
-    }
-
-    if (!set_nonblocking(server_fd)) {
-        std::cerr << "fcntl(server_fd) failed.\n";
-        unmap_file(mapping);
-        return 1;
-    }
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<uint16_t>(port));
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    const auto addr_bytes = std::as_bytes(std::span{&addr, 1});
-
-    if (io::bind(server_fd, addr_bytes) == -1) {
-        std::cerr << "bind() failed.\n";
-        unmap_file(mapping);
-        return 1;
-    }
-
-    if (io::listen(server_fd, BACKLOG) == -1) {
-        std::cerr << "listen() failed.\n";
-        unmap_file(mapping);
-        return 1;
-    }
-
-    std::array<std::thread, MAX_THREADS> pool{};
-
-    for (int i = 0; i < threads; ++i) {
-        pool[static_cast<std::size_t>(i)] = std::thread(
-            accept_loop,
-            std::ref(server_fd),
-            payload
-        );
-    }
-
-    for (int i = 0; i < threads; ++i) {
-        pool[static_cast<std::size_t>(i)].join();
+        return EXIT_FAILURE;
     }
 
     unmap_file(mapping);
-    return 0;
+    return EXIT_SUCCESS;
 }

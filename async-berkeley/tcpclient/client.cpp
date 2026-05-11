@@ -5,184 +5,130 @@
  * Minimal raw-byte client for performance and energy measurements.
  */
 
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <unistd.h>
-
 #include <io/io.hpp>
 
+#include <arpa/inet.h>
+
 #include <array>
-#include <cerrno>
+#include <csignal>
 #include <cstddef>
-#include <cstdint>
-#include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <span>
 #include <string>
+#include <system_error>
+#include <type_traits>
+#include <utility>
 
-using SocketHandle = io::socket::socket_handle;
+using namespace io;
+using namespace io::socket;
+using namespace io::execution;
+using namespace stdexec;
+using namespace exec;
+
+using triggers = basic_triggers<poll_multiplexer>;
+using dialog = socket_dialog<poll_multiplexer>;
+using message = socket_message<sockaddr_in>;
 
 constexpr int DEFAULT_PORT = 8080;
 constexpr std::size_t BUFFER_SIZE = 8192;
 
-static bool set_nonblocking(SocketHandle& fd) {
-    const int flags = io::fcntl(fd, F_GETFL, 0);
-    if (flags == -1) {
-        return false;
-    }
-
-    return io::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
-}
-
-static int native_fd(const SocketHandle& fd) {
-    return static_cast<int>(fd);
-}
-
-static bool wait_for_connect(SocketHandle& fd) {
-    pollfd pfd{};
-    pfd.fd = native_fd(fd);
-    pfd.events = POLLOUT;
-
-    while (true) {
-        const int ready = poll(&pfd, 1, -1);
-
-        if (ready > 0) {
-            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                return false;
-            }
-
-            if (pfd.revents & POLLOUT) {
-                int so_error = 0;
-                socklen_t len = sizeof(so_error);
-
-                if (::getsockopt(native_fd(fd), SOL_SOCKET, SO_ERROR, &so_error, &len) == -1) {
-                    return false;
-                }
-
-                return so_error == 0;
-            }
-        } else if (ready == -1) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return false;
-        }
-    }
-}
-
-static SocketHandle connect_to_server(const std::string& server_ip, int port) {
-    SocketHandle sock(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
-    if (native_fd(sock) < 0) {
-        return {};
-    }
-
-    if (!set_nonblocking(sock)) {
-        return {};
-    }
-
-    sockaddr_in server{};
-    server.sin_family = AF_INET;
-    server.sin_port = htons(static_cast<std::uint16_t>(port));
-
-    if (inet_pton(AF_INET, server_ip.c_str(), &server.sin_addr) <= 0) {
-        return {};
-    }
-
-    const auto server_bytes = std::as_bytes(std::span{&server, 1});
-    if (io::connect(sock, server_bytes) == -1) {
-        if (errno != EINPROGRESS) {
-            return {};
-        }
-
-        if (!wait_for_connect(sock)) {
-            return {};
-        }
-    }
-
-    return sock;
-}
-
-static bool wait_for_readable(SocketHandle& fd) {
-    pollfd pfd{};
-    pfd.fd = native_fd(fd);
-    pfd.events = POLLIN;
-
-    while (true) {
-        const int ready = poll(&pfd, 1, -1);
-
-        if (ready > 0) {
-            if (pfd.revents & (POLLERR | POLLNVAL)) {
-                return false;
-            }
-
-            if (pfd.revents & (POLLIN | POLLHUP)) {
-                return true;
-            }
-        } else if (ready == -1) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return false;
-        }
-    }
-}
-
-static bool receive_file(SocketHandle& fd, const std::string& output_path) {
-    std::ofstream out(output_path, std::ios::binary);
-    if (!out) {
-        std::cerr << "Failed to open output file: " << output_path << "\n";
-        return false;
-    }
-
+struct ClientState {
+    dialog client;
     std::array<char, BUFFER_SIZE> buffer{};
+    std::ofstream output_file;
+    bool failed = false;
 
-    while (true) {
-        io::socket::socket_message<> msg;
-        msg.buffers.emplace_back(buffer.data(), buffer.size());
+    explicit ClientState(dialog&& socket)
+        : client(std::move(socket)) {
+    }
+};
 
-        const ssize_t n = io::recvmsg(fd, msg, 0);
+static constexpr auto error_handler = [](const auto& error) {
+    if constexpr (std::is_same_v<std::decay_t<decltype(error)>, int>) {
+        std::cerr << std::error_code(error, std::system_category()).message() << "\n";
+    } else {
+        std::cerr << "async operation failed\n";
+    }
+};
 
-        if (n > 0) {
-            out.write(buffer.data(), static_cast<std::streamsize>(n));
-            if (!out) {
+static void receive_file(
+    async_scope& scope,
+    std::shared_ptr<ClientState> state
+) {
+    auto msg = std::make_shared<message>();
+    msg->buffers.emplace_back(
+        state->buffer.data(),
+        state->buffer.size()
+    );
+
+    auto operation =
+        recvmsg(state->client, *msg, 0)
+        | then([&scope, state, msg](ssize_t bytes_received) {
+            if (bytes_received <= 0) {
+                state->output_file.close();
+                return;
+            }
+
+            state->output_file.write(
+                state->buffer.data(),
+                static_cast<std::streamsize>(bytes_received)
+            );
+
+            if (!state->output_file) {
                 std::cerr << "Failed to write output file.\n";
-                return false;
+                state->failed = true;
+                state->output_file.close();
+                return;
             }
-            continue;
-        }
 
-        if (n == 0) {
-            break;
-        }
+            receive_file(scope, state);
+        })
+        | upon_error([state, msg](const auto& error) {
+            state->failed = true;
+            error_handler(error);
+        });
 
-        if (errno == EINTR) {
-            continue;
-        }
+    scope.spawn(std::move(operation));
+}
 
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (!wait_for_readable(fd)) {
-                std::cerr << "poll failed before transfer completion.\n";
-                return false;
-            }
-            continue;
-        }
+static std::shared_ptr<ClientState> start_client(
+    async_scope& scope,
+    dialog&& client,
+    socket_address<sockaddr_in> server_address,
+    const std::string& output_path
+) {
+    auto state = std::make_shared<ClientState>(std::move(client));
 
-        std::cerr << "recvmsg failed: " << std::strerror(errno) << "\n";
-        return false;
+    state->output_file.open(output_path, std::ios::binary);
+    if (!state->output_file) {
+        std::cerr << "Failed to open output file: " << output_path << "\n";
+        state->failed = true;
+        return state;
     }
 
-    out.close();
-    return true;
+    auto operation =
+        io::connect(state->client, server_address)
+        | then([&scope, state](const auto&) {
+            receive_file(scope, state);
+        })
+        | upon_error([state](const auto& error) {
+            state->failed = true;
+            error_handler(error);
+        });
+
+    scope.spawn(std::move(operation));
+    return state;
 }
 
 int main(int argc, char* argv[]) {
+    std::signal(SIGPIPE, SIG_IGN);
+
     if (argc < 2 || argc > 4) {
         std::cerr << "Usage: " << argv[0] << " <server_ip> [port] [output_file]\n";
-        return 1;
+        return EXIT_FAILURE;
     }
 
     const std::string server_ip = argv[1];
@@ -193,7 +139,7 @@ int main(int argc, char* argv[]) {
         port = std::stoi(argv[2]);
         if (port <= 0 || port > 65535) {
             std::cerr << "Invalid port.\n";
-            return 1;
+            return EXIT_FAILURE;
         }
     }
 
@@ -201,11 +147,25 @@ int main(int argc, char* argv[]) {
         output_path = argv[3];
     }
 
-    SocketHandle sock = connect_to_server(server_ip, port);
-    if (native_fd(sock) < 0) {
-        std::cerr << "connect failed\n";
-        return 1;
+    async_scope scope;
+    triggers trigs;
+
+    auto client = trigs.emplace(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+    auto server_address = make_address<sockaddr_in>();
+    server_address->sin_family = AF_INET;
+    server_address->sin_port = htons(static_cast<std::uint16_t>(port));
+    server_address->sin_addr.s_addr = inet_addr(server_ip.c_str());
+
+    auto state = start_client(
+        scope,
+        std::move(client),
+        server_address,
+        output_path
+    );
+
+    while (trigs.wait()) {
     }
 
-    return receive_file(sock, output_path) ? 0 : 1;
+    return state->failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }

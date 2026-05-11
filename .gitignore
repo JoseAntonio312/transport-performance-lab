@@ -11,6 +11,7 @@ raw/
 plots/
 reports/
 summaries/
+bsd-sockets-v/
 csv/
 
 *.json

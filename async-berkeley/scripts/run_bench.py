@@ -18,9 +18,6 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
 
-# =========================
-# PATHS
-# =========================
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 ROOT_DIR = PROJECT_DIR.parent
@@ -29,18 +26,12 @@ IDLE_BASELINE_JSON = ROOT_DIR / "idle_baseline.json"
 USE_IDLE_BASELINE = True
 DEFAULT_IDLE_POWER_W = 0.0
 
-# =========================
-# OUTPUT / NOISE CONTROL
-# =========================
 QUIET = False
 PRINT_FINAL_SUMMARY = False
 GENERATE_PLOTS = True
 GENERATE_PDF = True
 GENERATE_COMPARISON_PDF = True
 
-# =========================
-# BENCHMARK CONFIG
-# =========================
 BUILD_DIRS = {
     "gcc": "./build-gcc",
     "clang": "./build-clang",
@@ -82,28 +73,18 @@ MAIN_PDF_NO_RAW = REPORTS_DIR / "macro_bench_report_no_raw.pdf"
 COMPARISON_PDF_WITH_RAW = REPORTS_DIR / "macro_bench_comparison_report_with_raw.pdf"
 COMPARISON_PDF_NO_RAW = REPORTS_DIR / "macro_bench_comparison_report_no_raw.pdf"
 
-# Backward-compatible aliases
 PDF_RESULTS = MAIN_PDF_WITH_RAW
 COMPARISON_PDF_RESULTS = COMPARISON_PDF_WITH_RAW
 
-# =========================
-# CASE-LEVEL SETTLE / CACHE CONTROL
-# =========================
 CASE_CACHE_TRASH_ENABLED = True
 CASE_CACHE_TRASH_SIZE_MB = 1024
 CASE_DROP_CACHES = True
 CASE_COOLDOWN_SECONDS = 20
 
-# =========================
-# SERVER PROCESS
-# =========================
 SERVER_WAIT_TIMEOUT_SECONDS = 60.0
 SERVER_STOP_TIMEOUT_SECONDS = 5.0
 PORT_RETRY_SPAN = 200
 
-# =========================
-# PDF / TABLE TUNING
-# =========================
 TABLE_WRAP_MAIN = 20
 TABLE_WRAP_COMPARISON = 18
 TABLE_WRAP_RAW = 14
@@ -114,9 +95,6 @@ TABLE_COMPARISON_VERTICAL_SCALE = 3.3
 TABLE_RAW_VERTICAL_SCALE = 1.9
 
 
-# =========================
-# BASIC UTILITIES
-# =========================
 def log(msg):
     if not QUIET:
         print(msg, flush=True)
@@ -129,9 +107,7 @@ def ensure_results_dir():
         os.chmod(directory, 0o777)
 
 
-# =========================
-# IDLE BASELINE
-# =========================
+
 def load_idle_power_w():
     if not USE_IDLE_BASELINE:
         return DEFAULT_IDLE_POWER_W
@@ -160,9 +136,7 @@ def load_idle_power_w():
 IDLE_POWER_W = load_idle_power_w()
 
 
-# =========================
-# ENERGY
-# =========================
+
 def read_energy():
     with open(ENERGY_PATH) as f:
         return int(f.read().strip())
@@ -185,9 +159,7 @@ def energy_delta_j(e1, e2):
     return delta_uj / 1_000_000.0
 
 
-# =========================
-# PATH HELPERS
-# =========================
+
 def get_file_size():
     return os.path.getsize(FILE_TO_SERVE)
 
@@ -242,9 +214,7 @@ def read_text_file(path):
         return ""
 
 
-# =========================
-# PORT MANAGEMENT
-# =========================
+
 def is_port_open(host, port, timeout=0.5):
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -338,9 +308,7 @@ def prepare_server_port(compiler):
     return new_port
 
 
-# =========================
-# SERVER LIFECYCLE
-# =========================
+
 def start_server(compiler, server_threads):
     server_bin = get_server_bin(compiler)
     port = prepare_server_port(compiler)
@@ -444,9 +412,7 @@ def wait_for_server(proc, host, port, compiler, server_threads, timeout=SERVER_W
     )
 
 
-# =========================
-# CASE-LEVEL COOLING / CACHE
-# =========================
+
 def case_level_cache_trash():
     if not CASE_CACHE_TRASH_ENABLED:
         return
@@ -493,9 +459,7 @@ def settle_between_cases():
     time.sleep(CASE_COOLDOWN_SECONDS)
 
 
-# =========================
-# BENCH EXECUTION
-# =========================
+
 def start_bench_instance(compiler, server_threads, case_clients, repetition, index, port):
     bench_bin = get_bench_bin(compiler)
 
@@ -566,21 +530,27 @@ def parse_benchmark_json(path):
             data = json.load(f)
 
         total_iterations = 0
+        downloaded_bytes = 0
 
         for entry in data.get("benchmarks", []):
             if entry.get("error_occurred", False):
-                return False, 0
+                return False, 0, 0
 
-            if entry.get("run_type") == "iteration":
-                total_iterations += entry.get("iterations", 0)
+            run_type = entry.get("run_type")
 
-        if total_iterations <= 0:
-            return False, 0
+            if run_type is None or run_type == "iteration":
+                total_iterations += int(entry.get("iterations", 0))
 
-        return True, total_iterations
+                if "downloaded_bytes" in entry:
+                    downloaded_bytes += int(float(entry.get("downloaded_bytes", 0)))
+
+        if total_iterations <= 0 and downloaded_bytes <= 0:
+            return False, 0, 0
+
+        return True, total_iterations, downloaded_bytes
 
     except Exception:
-        return False, 0
+        return False, 0, 0
 
 
 
@@ -626,15 +596,17 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
     energy_j_net = max(0.0, energy_j_raw - idle_energy_j_estimated)
 
     total_iterations = 0
+    total_downloaded_bytes = 0
     valid_json_files = []
     success = 0
     failed = 0
 
     for path in outputs:
         if os.path.exists(path):
-            valid, iters = parse_benchmark_json(path)
+            valid, iters, bytes_downloaded = parse_benchmark_json(path)
             if valid:
                 total_iterations += iters
+                total_downloaded_bytes += bytes_downloaded
                 valid_json_files.append(str(path))
                 success += 1
             else:
@@ -642,7 +614,9 @@ def run_macro_bench_case(compiler, server_threads, num_benches, repetition, file
         else:
             failed += 1
 
-    real_bytes = total_iterations * file_size_bytes
+    real_bytes = total_downloaded_bytes
+    if real_bytes <= 0:
+        real_bytes = total_iterations * file_size_bytes
 
     throughput_mib_s = (
         real_bytes / (1024 * 1024) / elapsed_s
@@ -708,9 +682,7 @@ def run_campaign_for_compiler_and_threads(compiler, server_threads):
     return results
 
 
-# =========================
-# STATISTICS
-# =========================
+
 def percentile(sorted_values, p):
     if not sorted_values:
         return None
@@ -795,9 +767,7 @@ def summarize_results(results):
     return summary
 
 
-# =========================
-# CSV / TABLE FORMATTING
-# =========================
+
 def write_csv(results):
     fieldnames = [
         "compiler",
@@ -882,9 +852,7 @@ def stats_summary_line(stats, unit=""):
     )
 
 
-# =========================
-# PLOTS
-# =========================
+
 def make_per_run_scatter_with_mean(results, compiler, metric_key, metric_label, output_name):
     plt.figure(figsize=(11, 7))
 
@@ -1021,9 +989,7 @@ def generate_plots(results, summary):
         )
 
 
-# =========================
-# PDF HELPERS
-# =========================
+
 def add_text_page(pdf, title, lines, fontsize=11):
     fig = plt.figure(figsize=(8.27, 11.69))
     fig.clf()
@@ -1106,9 +1072,7 @@ def add_image_page(pdf, image_path, title):
     plt.close(fig)
 
 
-# =========================
-# TABLE BUILDERS
-# =========================
+
 def build_summary_table_rows(summary):
     rows = []
 
@@ -1192,9 +1156,7 @@ def build_comparison_table_rows(summary, server_threads):
     return rows
 
 
-# =========================
-# PDF REPORTS
-# =========================
+
 def generate_main_pdf_report(final_data, summary, results, output_path, include_raw_results):
     with PdfPages(output_path) as pdf:
         cover_lines = [
@@ -1406,9 +1368,7 @@ def generate_comparison_pdf_report(final_data, summary, results, output_path, in
                 )
 
 
-# =========================
-# CONSOLE SUMMARY
-# =========================
+
 def print_console_summary(summary):
     print("")
     print("==== STATISTICAL SUMMARY ====")
@@ -1450,9 +1410,7 @@ def print_console_summary(summary):
         print("")
 
 
-# =========================
-# MAIN
-# =========================
+
 def main():
     ensure_results_dir()
 
@@ -1531,3 +1489,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
