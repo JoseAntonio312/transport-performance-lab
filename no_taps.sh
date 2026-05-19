@@ -25,6 +25,8 @@ mkdir -p \
   "$PLOTS_DIR"
 
 rm -f "$FILTERED_SUMMARIES_DIR"/*_summary.json
+rm -f "$PLOTS_DIR"/*.png
+rm -f "$MASTER_JSON" "$MASTER_CSV" "$MASTER_PDF"
 
 echo "[1/3] Copying existing summaries except TAPS..."
 

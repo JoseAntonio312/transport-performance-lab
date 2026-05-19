@@ -314,6 +314,14 @@ For transport-specific details, the corresponding subproject README should alway
 - If project directories are renamed, the `PROJECT_DIRS` arrays in the root scripts must be updated accordingly.
 - This design keeps transport implementations decoupled while still enabling repository-wide automation and comparison.
 
+## Acknowledgements
+
+Special thanks to **Jesús Martínez Cruz** and **José Carlos** for their work on the experimental C++ TAPS implementation and for providing the updated TAPS repository used in this benchmark campaign:
+
+- <https://github.com/jmcruz-uma/taps_cpp/tree/main>
+
+Their contribution made it possible to evaluate TAPS under the same raw TCP file-transfer methodology used for the rest of the C++ middleware implementations. The TAPS code used in this context should be understood as experimental and academic work intended to support reproducible evaluation and discussion within the C++ networking community.
+
 ---
 
 ## Author

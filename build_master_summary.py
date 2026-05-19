@@ -47,6 +47,14 @@ LIBRARY_DISPLAY_ORDER = [
     LIBRARY_DISPLAY_NAMES[name] for name in LIBRARY_ORDER
 ]
 
+LIBRARY_COLORS = {
+    "BSD-sockets": "tab:blue",
+    "ASIO": "tab:orange",
+    "Capy-Corosio": "tab:green",
+    "Senders/Receivers": "tab:red",
+    "TAPS": "tab:purple",
+}
+
 
 def library_display_name(library_id):
     return LIBRARY_DISPLAY_NAMES.get(library_id, library_id)
@@ -62,6 +70,10 @@ def library_display_sort_key(library_name):
     if library_name in LIBRARY_DISPLAY_ORDER:
         return (LIBRARY_DISPLAY_ORDER.index(library_name), library_name)
     return (len(LIBRARY_DISPLAY_ORDER), library_name or "")
+
+
+def library_color(library_name):
+    return LIBRARY_COLORS.get(library_name, None)
 
 
 def ensure_parent_dir(path):
@@ -94,6 +106,15 @@ def fmt(v, decimals=4):
     return f"{v:.{decimals}f}"
 
 
+def infer_library_name(path):
+    base = os.path.basename(path)
+
+    if base.endswith("_summary.json"):
+        return base[:-len("_summary.json")]
+
+    return os.path.splitext(base)[0]
+
+
 def collect_summary_files(input_dir):
     summary_files = []
 
@@ -103,15 +124,6 @@ def collect_summary_files(input_dir):
                 summary_files.append(os.path.join(root, name))
 
     return sorted(summary_files, key=lambda path: library_sort_key(infer_library_name(path)))
-
-
-def infer_library_name(path):
-    base = os.path.basename(path)
-
-    if base.endswith("_summary.json"):
-        return base[:-len("_summary.json")]
-
-    return os.path.splitext(base)[0]
 
 
 def ensure_elapsed_ms_fields(row):
@@ -439,7 +451,14 @@ def plot_metric_all_libraries(rows, metric_field, ylabel, title, output_path):
         if any(v is not None for v in y):
             filtered_x = [xi for xi, yi in zip(x, y) if yi is not None]
             filtered_y = [yi for yi in y if yi is not None]
-            plt.plot(filtered_x, filtered_y, marker="o", linewidth=2.0, label=library)
+            plt.plot(
+                filtered_x,
+                filtered_y,
+                marker="o",
+                linewidth=2.0,
+                label=library,
+                color=library_color(library),
+            )
 
     plt.xlabel("Ordered benchmark configuration index")
     plt.ylabel(ylabel)
@@ -481,7 +500,14 @@ def plot_metric_grouped_by_case(rows, metric_field, ylabel, title, output_path):
         filtered_y = [yi for yi in y if yi is not None]
 
         if filtered_y:
-            plt.plot(filtered_x, filtered_y, marker="o", linewidth=2.0, label=library)
+            plt.plot(
+                filtered_x,
+                filtered_y,
+                marker="o",
+                linewidth=2.0,
+                label=library,
+                color=library_color(library),
+            )
 
     tick_labels = [
         f"{compiler}, T={server_threads}, C={parallel_clients}"
@@ -530,7 +556,14 @@ def plot_metric_by_compiler(rows, compiler, metric_field, ylabel, title, output_
         filtered_y = [yi for yi in y if yi is not None]
 
         if filtered_y:
-            plt.plot(filtered_x, filtered_y, marker="o", linewidth=2.0, label=library)
+            plt.plot(
+                filtered_x,
+                filtered_y,
+                marker="o",
+                linewidth=2.0,
+                label=library,
+                color=library_color(library),
+            )
 
     tick_labels = [f"T={server_threads}, C={parallel_clients}" for server_threads, parallel_clients in cases]
 
@@ -576,7 +609,14 @@ def plot_metric_by_server_threads(rows, server_threads, metric_field, ylabel, ti
         filtered_y = [yi for yi in y if yi is not None]
 
         if filtered_y:
-            plt.plot(filtered_x, filtered_y, marker="o", linewidth=2.0, label=library)
+            plt.plot(
+                filtered_x,
+                filtered_y,
+                marker="o",
+                linewidth=2.0,
+                label=library,
+                color=library_color(library),
+            )
 
     tick_labels = [f"{compiler}, C={parallel_clients}" for compiler, parallel_clients in cases]
 

@@ -67,7 +67,7 @@ LOGS_DIR = RESULTS_DIR / "logs"
 
 MACRO_BENCH_CASES = [1, 2, 4, 8, 16]
 SERVER_THREADS = [1, 2, 4, 8]
-MACRO_REPETITIONS = 15
+MACRO_REPETITIONS = 25
 
 BENCH_ARGS = [
     "--benchmark_out_format=json"
