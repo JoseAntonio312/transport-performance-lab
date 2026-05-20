@@ -18,15 +18,19 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <span>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -36,6 +40,7 @@ namespace fs = std::filesystem;
 
 constexpr int DEFAULT_PORT = 8080;
 constexpr int MAX_THREADS = 256;
+constexpr std::size_t FALLBACK_SEND_CHUNK_SIZE = 65536;
 
 struct FileMapping {
     int fd = -1;
@@ -83,34 +88,46 @@ static void unmap_file(FileMapping& mapping) {
     mapping.size = 0;
 }
 
-static asio::awaitable<void> send_file(
-    taps::Connection& connection,
-    std::span<const char> payload
-) {
-    if (payload.empty()) {
-        co_return;
+static std::size_t read_default_tcp_send_buffer_size() {
+    std::ifstream file("/proc/sys/net/ipv4/tcp_wmem");
+    if (!file) {
+        return FALLBACK_SEND_CHUNK_SIZE;
     }
 
-    /*
-     * Keep the semantics equivalent to the other asynchronous servers:
-     *
-     * - one logical file transfer per client;
-     * - the coroutine awaits the asynchronous send operation;
-     * - the accept loop is not blocked because serve_client() is spawned
-     *   independently with co_spawn().
-     *
-     * string_view is used to avoid building an explicit std::vector copy here.
-     * The TAPS Message implementation may still copy internally, but this server
-     * does not create an extra per-client payload vector.
-     */
-    const std::string_view payload_view(payload.data(), payload.size());
+    std::size_t minimum = 0;
+    std::size_t default_value = 0;
+    std::size_t maximum = 0;
 
-    auto message = taps::make_message(payload_view);
+    file >> minimum >> default_value >> maximum;
+    if (!file || default_value == 0) {
+        return FALLBACK_SEND_CHUNK_SIZE;
+    }
 
-    auto send_result = co_await connection.send(std::move(message));
-    if (!send_result) {
-        std::cerr << "send failed: " << send_result.error().message() << "\n";
-        co_return;
+    return default_value;
+}
+
+static asio::awaitable<void> send_file(
+    taps::Connection& connection,
+    std::span<const char> payload,
+    std::size_t chunk_size
+) {
+    std::size_t sent = 0;
+
+    while (sent < payload.size()) {
+        const std::size_t to_send = std::min(chunk_size, payload.size() - sent);
+
+        auto send_result = co_await connection.send(
+            taps::make_message_view(
+                std::string_view(payload.data() + sent, to_send)
+            )
+        );
+
+        if (!send_result) {
+            std::cerr << "send failed: " << send_result.error().message() << "\n";
+            break;
+        }
+
+        sent += to_send;
     }
 
     co_return;
@@ -118,25 +135,24 @@ static asio::awaitable<void> send_file(
 
 static asio::awaitable<void> serve_client(
     std::unique_ptr<taps::Connection> connection,
-    std::span<const char> payload
+    std::span<const char> payload,
+    std::size_t chunk_size
 ) {
     try {
-        co_await send_file(*connection, payload);
+        co_await send_file(*connection, payload, chunk_size);
     } catch (const std::exception& e) {
         std::cerr << "serve_client exception: " << e.what() << "\n";
     } catch (...) {
         std::cerr << "serve_client unknown exception\n";
     }
 
-    auto close_result = co_await connection->close();
-    (void)close_result;
-
     co_return;
 }
 
 static asio::awaitable<void> accept_loop(
     taps::Listener& listener,
-    std::span<const char> payload
+    std::span<const char> payload,
+    std::size_t chunk_size
 ) {
     auto executor = co_await asio::this_coro::executor;
 
@@ -148,16 +164,9 @@ static asio::awaitable<void> accept_loop(
             continue;
         }
 
-        /*
-         * Critical point for fairness:
-         *
-         * Do not co_await serve_client() here.
-         * Spawn the client coroutine and immediately go back to accept().
-         * This matches the Asio/Corosio concurrent server structure.
-         */
         asio::co_spawn(
             executor,
-            serve_client(std::move(*accept_result), payload),
+            serve_client(std::move(*accept_result), payload, chunk_size),
             asio::detached
         );
     }
@@ -166,7 +175,8 @@ static asio::awaitable<void> accept_loop(
 static asio::awaitable<void> listen_loop(
     asio::io_context& io_context,
     int port,
-    std::span<const char> payload
+    std::span<const char> payload,
+    std::size_t chunk_size
 ) {
     taps::TransportServices transport_services(io_context);
 
@@ -174,13 +184,6 @@ static asio::awaitable<void> listen_loop(
     properties.set(taps::PropertyKey::RELIABILITY, taps::SelectionProperty::REQUIRE);
     properties.set(taps::PropertyKey::PRESERVE_ORDER, taps::SelectionProperty::REQUIRE);
 
-    /*
-     * With the current TAPS API, TransportServices::listen() creates the
-     * listening endpoint directly.
-     *
-     * Do not call listener->listen() afterwards, because that causes:
-     *   listen failed: Already listening
-     */
     auto listen_result = co_await transport_services.listen(
         taps::LocalEndpoint{"0.0.0.0", static_cast<std::uint16_t>(port)},
         std::move(properties)
@@ -194,8 +197,9 @@ static asio::awaitable<void> listen_loop(
     auto listener = std::move(*listen_result);
 
     std::cout << "Server listening on port " << port << "\n";
+    std::cout << "TAPS send chunk size: " << chunk_size << " bytes\n";
 
-    co_await accept_loop(*listener, payload);
+    co_await accept_loop(*listener, payload, chunk_size);
 }
 
 int main(int argc, char* argv[]) {
@@ -241,6 +245,7 @@ int main(int argc, char* argv[]) {
     }
 
     const std::span<const char> payload(mapping.data, mapping.size);
+    const std::size_t chunk_size = read_default_tcp_send_buffer_size();
 
     try {
         asio::io_context io_context;
@@ -248,7 +253,7 @@ int main(int argc, char* argv[]) {
 
         asio::co_spawn(
             io_context,
-            listen_loop(io_context, port, payload),
+            listen_loop(io_context, port, payload, chunk_size),
             asio::detached
         );
 

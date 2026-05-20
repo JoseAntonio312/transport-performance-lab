@@ -5,17 +5,21 @@
  * Minimal raw-byte server for performance and energy measurements.
  */
 
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
-#include <fstream>
 #include <functional>
 #include <iostream>
-#include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -32,40 +36,51 @@ namespace capy = boost::capy;
 constexpr int DEFAULT_PORT = 8080;
 constexpr int BACKLOG = 128;
 constexpr int MAX_THREADS = 256;
-constexpr std::uint64_t MAX_FILE_SIZE = 2ull * 1024ull * 1024ull * 1024ull;
 
-struct FileBuffer {
-    std::unique_ptr<char[]> data;
-    std::size_t valid_size = 0;
+struct FileMapping {
+    int fd = -1;
+    const char* data = nullptr;
+    std::size_t size = 0;
 };
 
-static FileBuffer load_file_into_memory(const fs::path& path) {
-    const std::uint64_t file_size_u64 = fs::file_size(path);
+static FileMapping map_file_read_only(const fs::path& path) {
+    FileMapping mapping{};
 
-    if (file_size_u64 > MAX_FILE_SIZE) {
-        throw std::runtime_error("File is larger than MAX_FILE_SIZE.");
-    }
+    const std::uintmax_t file_size = fs::file_size(path);
+    mapping.size = static_cast<std::size_t>(file_size);
 
-    const std::size_t file_size = static_cast<std::size_t>(file_size_u64);
-
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
+    mapping.fd = open(path.c_str(), O_RDONLY);
+    if (mapping.fd == -1) {
         throw std::runtime_error("Failed to open file: " + path.string());
     }
 
-    FileBuffer file_buffer;
-    file_buffer.valid_size = file_size;
-
-    if (file_size > 0) {
-        file_buffer.data = std::make_unique<char[]>(file_size);
-
-        file.read(file_buffer.data.get(), static_cast<std::streamsize>(file_size));
-        if (!file) {
-            throw std::runtime_error("Failed to read file contents.");
-        }
+    if (mapping.size == 0) {
+        mapping.data = nullptr;
+        return mapping;
     }
 
-    return file_buffer;
+    void* ptr = mmap(nullptr, mapping.size, PROT_READ, MAP_PRIVATE, mapping.fd, 0);
+    if (ptr == MAP_FAILED) {
+        close(mapping.fd);
+        throw std::runtime_error("mmap failed.");
+    }
+
+    mapping.data = static_cast<const char*>(ptr);
+    return mapping;
+}
+
+static void unmap_file(FileMapping& mapping) {
+    if (mapping.data != nullptr && mapping.size > 0) {
+        munmap(const_cast<char*>(mapping.data), mapping.size);
+    }
+
+    if (mapping.fd != -1) {
+        close(mapping.fd);
+    }
+
+    mapping.data = nullptr;
+    mapping.fd = -1;
+    mapping.size = 0;
 }
 
 static capy::task<void> send_file(
@@ -153,18 +168,15 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    FileBuffer file_buffer;
+    FileMapping mapping{};
     try {
-        file_buffer = load_file_into_memory(file_path);
+        mapping = map_file_read_only(file_path);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return EXIT_FAILURE;
     }
 
-    const std::span<const char> file_view(
-        file_buffer.valid_size > 0 ? file_buffer.data.get() : nullptr,
-        file_buffer.valid_size
-    );
+    const std::span<const char> file_view(mapping.data, mapping.size);
 
     try {
         corosio::io_context ctx;
@@ -175,12 +187,14 @@ int main(int argc, char* argv[]) {
         auto bind_ec = acceptor.bind(corosio::endpoint(static_cast<std::uint16_t>(port)));
         if (bind_ec) {
             std::cerr << "bind: " << bind_ec.message() << "\n";
+            unmap_file(mapping);
             return EXIT_FAILURE;
         }
 
         auto listen_ec = acceptor.listen(BACKLOG);
         if (listen_ec) {
             std::cerr << "listen: " << listen_ec.message() << "\n";
+            unmap_file(mapping);
             return EXIT_FAILURE;
         }
 
@@ -199,9 +213,11 @@ int main(int argc, char* argv[]) {
             worker.join();
         }
 
+        unmap_file(mapping);
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
+        unmap_file(mapping);
         return EXIT_FAILURE;
     }
 }

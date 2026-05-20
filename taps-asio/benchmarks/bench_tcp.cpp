@@ -25,6 +25,7 @@
 #include <utility>
 
 constexpr int DEFAULT_PORT = 8080;
+constexpr std::uint64_t EXPECTED_FILE_SIZE_BYTES = 100ull * 1024ull * 1024ull;
 
 static int g_port = DEFAULT_PORT;
 
@@ -52,7 +53,7 @@ static asio::awaitable<std::unique_ptr<taps::Connection>> connect_to_server(
     co_return std::move(*connection_result);
 }
 
-static asio::awaitable<bool> receive_data(
+static asio::awaitable<std::uint64_t> receive_data(
     asio::io_context& io_context,
     const char* ip,
     int port
@@ -61,7 +62,7 @@ static asio::awaitable<bool> receive_data(
 
     auto connection = co_await connect_to_server(transport_services, ip, port);
     if (!connection) {
-        co_return false;
+        co_return 0;
     }
 
     std::uint64_t total_bytes = 0;
@@ -87,10 +88,14 @@ static asio::awaitable<bool> receive_data(
         benchmark::ClobberMemory();
     }
 
-    co_return total_bytes > 0;
+    co_return total_bytes;
 }
 
-static bool run_benchmark_download(const char* ip, int port) {
+static bool run_benchmark_download(
+    const char* ip,
+    int port,
+    std::uint64_t& downloaded_bytes
+) {
     asio::io_context io_context;
 
     auto result = asio::co_spawn(
@@ -101,23 +106,39 @@ static bool run_benchmark_download(const char* ip, int port) {
 
     io_context.run();
 
-    return result.get();
+    downloaded_bytes = result.get();
+    return downloaded_bytes > 0;
 }
 
 static void BM_TCP_FileDownload(benchmark::State& state) {
     constexpr const char* ip = "127.0.0.1";
     const int port = g_port;
 
+    std::uint64_t bytes_processed = 0;
+    std::uint64_t last_downloaded_bytes = 0;
+
     for (auto _ : state) {
         (void)_;
 
-        const bool ok = run_benchmark_download(ip, port);
+        std::uint64_t downloaded_bytes = 0;
+        const bool ok = run_benchmark_download(ip, port, downloaded_bytes);
 
         if (!ok) {
             state.SkipWithError("Download failed.");
             break;
         }
+
+        if (downloaded_bytes != EXPECTED_FILE_SIZE_BYTES) {
+            state.SkipWithError("Downloaded byte count does not match expected file size.");
+            break;
+        }
+
+        bytes_processed += downloaded_bytes;
+        last_downloaded_bytes = downloaded_bytes;
     }
+
+    state.SetBytesProcessed(static_cast<int64_t>(bytes_processed));
+    state.counters["downloaded_bytes"] = static_cast<double>(last_downloaded_bytes);
 }
 
 BENCHMARK(BM_TCP_FileDownload)
