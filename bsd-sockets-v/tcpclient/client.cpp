@@ -23,7 +23,7 @@
 #include <string>
 
 constexpr int DEFAULT_PORT = 8080;
-constexpr std::size_t BUFFER_SIZE = 8192;
+constexpr std::size_t BUFFER_SIZE = 65536;
 
 static bool set_nonblocking(int fd) {
     const int flags = fcntl(fd, F_GETFL, 0);

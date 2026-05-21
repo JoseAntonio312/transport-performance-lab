@@ -26,7 +26,7 @@
 using tcp = asio::ip::tcp;
 
 constexpr int DEFAULT_PORT = 8080;
-constexpr std::size_t BUFFER_SIZE = 8192;
+constexpr std::size_t BUFFER_SIZE = 65536;
 
 static asio::awaitable<bool> connect_to_server(
     tcp::socket& socket,

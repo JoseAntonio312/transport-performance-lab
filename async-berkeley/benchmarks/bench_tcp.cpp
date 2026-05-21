@@ -36,7 +36,7 @@ using dialog = socket_dialog<poll_multiplexer>;
 using message = socket_message<sockaddr_in>;
 
 constexpr int DEFAULT_PORT = 8080;
-constexpr std::size_t BUFFER_SIZE = 8192;
+constexpr std::size_t BUFFER_SIZE = 65536;
 
 static int g_port = DEFAULT_PORT;
 

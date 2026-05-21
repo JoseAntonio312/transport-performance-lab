@@ -22,7 +22,7 @@
 #include <string>
 
 constexpr int DEFAULT_PORT = 8080;
-constexpr std::size_t BUFFER_SIZE = 8192;
+constexpr std::size_t BUFFER_SIZE = 65536;
 
 
 static int connect_to_server(const std::string& server_ip, int port) {
