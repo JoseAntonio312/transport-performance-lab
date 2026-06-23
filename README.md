@@ -1,4 +1,4 @@
-# TFM-Repo - Global Build and Benchmark Automation
+# Global Build and Benchmark Automation
 
 This repository groups several experimental file-transfer implementations in **C++23**. The goal is to compare them under a common methodology in terms of:
 
